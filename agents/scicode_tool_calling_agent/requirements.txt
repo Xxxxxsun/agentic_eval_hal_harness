@@ -1,0 +1,7 @@
+openai
+smolagents
+smolagents[all]
+weave
+wikipedia
+wikipedia-api
+litellm

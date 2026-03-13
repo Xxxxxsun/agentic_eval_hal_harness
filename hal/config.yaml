@@ -1,0 +1,3 @@
+# SWE-bench Settings
+swebench_lite:
+  max_workers: 4

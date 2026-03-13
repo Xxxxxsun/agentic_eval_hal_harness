@@ -1,0 +1,13 @@
+Please reply with a Python 3 solution to the below problem. Read the general instructions below that are applicable to every task,
+
+{question}
+
+Important instructions to follow:
+
+1. Ensure that your code is wrapped in '```python' and '```' Markdown delimiters.
+2. Provide exactly one block of code containing the entire solution.
+3. The code should include a main function and an `if __name__ == "__main__"` block as the entry point.
+4. Begin by reasoning through the problem and conceptualizing a solution. Then, write pseudocode, and finally output the Python code with your solution steps in comments.
+5. Carefully examine the SAMPLE INPUT: and SAMPLE OUTPUT: sections provided as part of the problem and follow the format exactly as specified there.
+6. If there are empty lines separating multiple sample inputs in the SAMPLE INPUT: section provided in the problem, handle them appropriately.
+7. Do not use any outside libraries.
