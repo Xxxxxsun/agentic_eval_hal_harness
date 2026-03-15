@@ -41,7 +41,7 @@ if [[ "${RANK}" == "0" ]]; then
     # 只在 master 节点启动 vllm server
     vllm serve /tmp/model_actor \
         --port 8234 \
-        --model-name qwen3p5_397B_A17B \
+        --served-model-name qwen3p5_397B_A17B \
         --max-model-len 32768 \
         --distributed-executor-backend ray \
         --enable-expert-parallel \
