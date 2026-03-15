@@ -62,7 +62,7 @@ if [[ "${RANK}" == "0" ]]; then
     max_retries=60
     retry_count=0
     while ! curl -s http://localhost:8234/health > /dev/null 2>&1; do
-        sleep 5
+        sleep 60
         retry_count=$((retry_count + 1))
         if [[ ${retry_count} -ge ${max_retries} ]]; then
             echo "Error: vLLM server failed to start within timeout"
