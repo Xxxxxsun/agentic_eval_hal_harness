@@ -2,6 +2,44 @@
 set -x
 export NCCL_WORK_FIFO_DEPTH=4194304
 
+# 解析命令行参数
+MODEL_NAME=""
+BENCHMARK_NAME=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --model-name)
+            MODEL_NAME="$2"
+            shift 2
+            ;;
+        --benchmark)
+            BENCHMARK_NAME="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name>"
+            exit 1
+            ;;
+    esac
+done
+
+# 参数校验
+if [[ -z "${MODEL_NAME}" ]]; then
+    echo "Error: --model-name is required"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name>"
+    exit 1
+fi
+
+if [[ -z "${BENCHMARK_NAME}" ]]; then
+    echo "Error: --benchmark is required"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name>"
+    exit 1
+fi
+
+echo "Using MODEL_NAME: ${MODEL_NAME}"
+echo "Using BENCHMARK_NAME: ${BENCHMARK_NAME}"
+
 # 安装依赖
 apt-get update && apt-get install -y rclone
 pip install qwen_vl_utils ijson
@@ -41,7 +79,7 @@ if [[ "${RANK}" == "0" ]]; then
     # 只在 master 节点启动 vllm server
     vllm serve /tmp/model_actor \
         --port 8234 \
-        --served-model-name qwen3p5_397B_A17B \
+        --served-model-name ${MODEL_NAME} \
         --max-model-len 32768 \
         --distributed-executor-backend ray \
         --enable-expert-parallel \
@@ -80,11 +118,11 @@ if [[ "${RANK}" == "0" ]]; then
     pip install -e .
     
     hal-eval \
-        --agent_name "qwen3p5_397B_A17B" \
-        --agent_dir agents/aime2025_agent \
+        --agent_name "${MODEL_NAME}" \
+        --agent_dir "agents/${BENCHMARK_NAME}_agent" \
         --agent_function main.run \
-        --benchmark aime2025 \
-        -A model_name=qwen3p5_397B_A17B
+        --benchmark "${BENCHMARK_NAME}" \
+        -A model_name="${MODEL_NAME}"
     
     # 评测完成后，保持容器运行便于调试
     echo "Evaluation completed. Keeping container alive for debugging..."
