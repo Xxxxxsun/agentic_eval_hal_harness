@@ -5,6 +5,7 @@ export NCCL_WORK_FIFO_DEPTH=4194304
 # 解析命令行参数
 MODEL_NAME=""
 BENCHMARK_NAME=""
+MAX_TASKS=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -16,9 +17,13 @@ while [[ $# -gt 0 ]]; do
             BENCHMARK_NAME="$2"
             shift 2
             ;;
+        --max-tasks)
+            MAX_TASKS="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name>"
+            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>]"
             exit 1
             ;;
     esac
@@ -27,18 +32,21 @@ done
 # 参数校验
 if [[ -z "${MODEL_NAME}" ]]; then
     echo "Error: --model-name is required"
-    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name>"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>]"
     exit 1
 fi
 
 if [[ -z "${BENCHMARK_NAME}" ]]; then
     echo "Error: --benchmark is required"
-    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name>"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>]"
     exit 1
 fi
 
 echo "Using MODEL_NAME: ${MODEL_NAME}"
 echo "Using BENCHMARK_NAME: ${BENCHMARK_NAME}"
+if [[ -n "${MAX_TASKS}" ]]; then
+    echo "Using MAX_TASKS: ${MAX_TASKS}"
+fi
 
 # 安装依赖
 apt-get update && apt-get install -y rclone
@@ -117,12 +125,21 @@ if [[ "${RANK}" == "0" ]]; then
     export OPENAI_API_KEY=empty
     pip install -e .
     
-    hal-eval \
-        --agent_name "${MODEL_NAME}" \
-        --agent_dir "agents/${BENCHMARK_NAME}_agent" \
+    # 构建 hal-eval 命令
+    HAL_EVAL_CMD="hal-eval \
+        --agent_name ${MODEL_NAME} \
+        --agent_dir agents/${BENCHMARK_NAME}_agent \
         --agent_function main.run \
-        --benchmark "${BENCHMARK_NAME}" \
-        -A model_name="${MODEL_NAME}"
+        --benchmark ${BENCHMARK_NAME} \
+        -A model_name=${MODEL_NAME}"
+    
+    # 如果指定了 max-tasks，添加该参数
+    if [[ -n "${MAX_TASKS}" ]]; then
+        HAL_EVAL_CMD="${HAL_EVAL_CMD} --max_tasks ${MAX_TASKS}"
+    fi
+    
+    # 执行评测
+    eval ${HAL_EVAL_CMD}
     
     # 评测完成后，保持容器运行便于调试
     echo "Evaluation completed. Keeping container alive for debugging..."

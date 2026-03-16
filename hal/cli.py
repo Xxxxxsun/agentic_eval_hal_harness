@@ -133,9 +133,9 @@ load_dotenv()
 )
 @click.option(
     "--results_dir",
-    default=os.environ.get("PRIMUS_OUTPUT_DIR", "results"),
+    default="results",
     type=str,
-    help="Base directory for storing results (default: $PRIMUS_OUTPUT_DIR or 'results')",
+    help="Base directory for storing results (default: results)",
 )
 @click.option(
     "--task_ids",
@@ -303,6 +303,25 @@ def main(
                 logger.warning(
                     "Could not generate run summary - missing benchmark or run directory"
                 )
+
+            # Copy results to PRIMUS_OUTPUT_DIR if set
+            primus_output_dir = os.environ.get("PRIMUS_OUTPUT_DIR")
+            if primus_output_dir:
+                import shutil
+                src_dir = os.path.join(results_dir, benchmark, run_id)
+                dst_dir = os.path.join(primus_output_dir, benchmark, run_id)
+                if os.path.exists(src_dir):
+                    os.makedirs(dst_dir, exist_ok=True)
+                    for item in os.listdir(src_dir):
+                        src_path = os.path.join(src_dir, item)
+                        dst_path = os.path.join(dst_dir, item)
+                        if os.path.isfile(src_path):
+                            shutil.copy2(src_path, dst_path)
+                        elif os.path.isdir(src_path):
+                            if os.path.exists(dst_path):
+                                shutil.rmtree(dst_path)
+                            shutil.copytree(src_path, dst_path)
+                    logger.info(f"Results copied to PRIMUS_OUTPUT_DIR: {dst_dir}")
 
         except Exception as e:
             logger.error(f"Error running evaluation: {str(e)}")
