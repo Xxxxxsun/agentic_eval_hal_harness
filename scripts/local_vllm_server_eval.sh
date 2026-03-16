@@ -6,6 +6,7 @@ export NCCL_WORK_FIFO_DEPTH=4194304
 MODEL_NAME=""
 BENCHMARK_NAME=""
 MAX_TASKS=""
+NUM_SAMPLES=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -21,9 +22,13 @@ while [[ $# -gt 0 ]]; do
             MAX_TASKS="$2"
             shift 2
             ;;
+        --num-samples)
+            NUM_SAMPLES="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>]"
+            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>]"
             exit 1
             ;;
     esac
@@ -32,13 +37,13 @@ done
 # 参数校验
 if [[ -z "${MODEL_NAME}" ]]; then
     echo "Error: --model-name is required"
-    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>]"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>]"
     exit 1
 fi
 
 if [[ -z "${BENCHMARK_NAME}" ]]; then
     echo "Error: --benchmark is required"
-    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>]"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>]"
     exit 1
 fi
 
@@ -46,6 +51,9 @@ echo "Using MODEL_NAME: ${MODEL_NAME}"
 echo "Using BENCHMARK_NAME: ${BENCHMARK_NAME}"
 if [[ -n "${MAX_TASKS}" ]]; then
     echo "Using MAX_TASKS: ${MAX_TASKS}"
+fi
+if [[ -n "${NUM_SAMPLES}" ]]; then
+    echo "Using NUM_SAMPLES: ${NUM_SAMPLES}"
 fi
 
 # 安装依赖
@@ -136,6 +144,11 @@ if [[ "${RANK}" == "0" ]]; then
     # 如果指定了 max-tasks，添加该参数
     if [[ -n "${MAX_TASKS}" ]]; then
         HAL_EVAL_CMD="${HAL_EVAL_CMD} --max_tasks ${MAX_TASKS}"
+    fi
+    
+    # 如果指定了 num-samples，添加该参数
+    if [[ -n "${NUM_SAMPLES}" ]]; then
+        HAL_EVAL_CMD="${HAL_EVAL_CMD} --num_samples ${NUM_SAMPLES}"
     fi
     
     # 执行评测
