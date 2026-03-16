@@ -1,10 +1,13 @@
 import json
+import sys
 import os
 from types import SimpleNamespace
 
+# Add agents directory to path for common module import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from model_client import chat_completion_with_tools, _get_model_mode
-from iagent.adk.sandbox.iagent_sandbox import IAgentSandbox, CodeLanguage, HttpConfig
-from iagent.adk.sandbox.sandbox_type import SandboxSpecConfig
+from common.sandbox_executor import SandboxManager
 
 SYSTEM_PROMPT = """You are an expert mathematician solving problems from the American Invitational Mathematics Examination (AIME).
 
@@ -46,98 +49,6 @@ PYTHON_EXECUTION_TOOL = {
         },
     },
 }
-
-class SandboxManager:
-    """Manages iagent sandbox for code execution with context preservation."""
-
-    def __init__(self, base_url: str = None):
-        self.base_url = base_url or os.getenv(
-            "IAGENT_SANDBOX_URL", "http://pre-iagent-sandbox-2.alibaba-inc.com"
-        )
-        self.http_config = HttpConfig(
-            timeout=300,
-            max_retries=3,
-            retry_delay=1,
-            retry_on_status=(500, 502, 503, 504),
-            verify_ssl=True,
-            proxies=None,
-            default_headers={"User-Agent": "PythonHttpClient/1.0"},
-        )
-        self.sandbox_spec = SandboxSpecConfig(
-            timeout_seconds=60 * 60 * 24,
-            cpu=4,
-            memory_gb=8,
-            resource="iagent-test",
-            envs={},
-            init_commands=[],
-            template="iagent-sandbox-server",
-            allow_domains=[],
-        )
-        self.sandbox = None
-        self.context = None
-        self.initialized = False
-
-    def initialize(self):
-        """Initialize sandbox and install dependencies."""
-        if self.initialized:
-            return
-
-        self.sandbox = IAgentSandbox(
-            base_url=self.base_url,
-            sandbox_id="",
-            http_config=self.http_config,
-            sandbox_spec=self.sandbox_spec,
-        )
-
-        # Install dependencies (only once per sandbox)
-        install_ctx = self.sandbox.create_code_context(
-            code_language=CodeLanguage.PYTHON_3_11
-        )
-        install_cmds = """
-%pip install numpy -i https://mirrors.aliyun.com/pypi/simple/
-%pip install scipy -i https://mirrors.aliyun.com/pypi/simple/
-%pip install sympy -i https://mirrors.aliyun.com/pypi/simple/
-"""
-        self.sandbox.run_code_with_context(install_cmds, context=install_ctx)
-
-        # Create execution context (preserves state across calls)
-        self.context = self.sandbox.create_code_context(
-            code_language=CodeLanguage.PYTHON_3_11
-        )
-        self.initialized = True
-
-    def execute_code(self, code: str) -> str:
-        """Execute code in sandbox and return output."""
-        if not self.initialized:
-            self.initialize()
-
-        try:
-            result = self.sandbox.run_code_with_context(code=code, context=self.context)
-            result_json = result.to_json()
-
-            if result_json.get("success", False):
-                output = result_json.get("outputs", "")
-                output = output.strip() if output else "(No output)"
-                # Truncate very long outputs
-                if len(output) > 10000:
-                    output = output[:10000] + "\n... [output truncated]"
-                return output
-            else:
-                error_msg = result_json.get("error_message") or "Code execution failed"
-                return f"Error: {error_msg}"
-        except Exception as execution_error:
-            return f"Error executing code: {str(execution_error)}"
-
-    def destroy(self):
-        """Destroy the sandbox to release resources."""
-        if self.sandbox is not None:
-            try:
-                self.sandbox.destroy()
-            except Exception:
-                pass
-            self.sandbox = None
-            self.context = None
-            self.initialized = False
 
 def _normalize_response(raw_response, mode: str, iteration: int = 0):
     """
