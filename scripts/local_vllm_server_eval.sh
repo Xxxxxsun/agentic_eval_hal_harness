@@ -7,6 +7,7 @@ MODEL_NAME=""
 BENCHMARK_NAME=""
 MAX_TASKS=""
 NUM_SAMPLES=""
+MAX_CONCURRENT=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -26,9 +27,13 @@ while [[ $# -gt 0 ]]; do
             NUM_SAMPLES="$2"
             shift 2
             ;;
+        --max-concurrent)
+            MAX_CONCURRENT="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>]"
+            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>]"
             exit 1
             ;;
     esac
@@ -37,13 +42,13 @@ done
 # 参数校验
 if [[ -z "${MODEL_NAME}" ]]; then
     echo "Error: --model-name is required"
-    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>]"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>]"
     exit 1
 fi
 
 if [[ -z "${BENCHMARK_NAME}" ]]; then
     echo "Error: --benchmark is required"
-    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>]"
+    echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>]"
     exit 1
 fi
 
@@ -54,6 +59,9 @@ if [[ -n "${MAX_TASKS}" ]]; then
 fi
 if [[ -n "${NUM_SAMPLES}" ]]; then
     echo "Using NUM_SAMPLES: ${NUM_SAMPLES}"
+fi
+if [[ -n "${MAX_CONCURRENT}" ]]; then
+    echo "Using MAX_CONCURRENT: ${MAX_CONCURRENT}"
 fi
 
 # 安装依赖
@@ -149,6 +157,11 @@ if [[ "${RANK}" == "0" ]]; then
     # 如果指定了 num-samples，添加该参数
     if [[ -n "${NUM_SAMPLES}" ]]; then
         HAL_EVAL_CMD="${HAL_EVAL_CMD} --num_samples ${NUM_SAMPLES}"
+    fi
+    
+    # 如果指定了 max-concurrent，添加该参数
+    if [[ -n "${MAX_CONCURRENT}" ]]; then
+        HAL_EVAL_CMD="${HAL_EVAL_CMD} --max_concurrent ${MAX_CONCURRENT}"
     fi
     
     # 执行评测

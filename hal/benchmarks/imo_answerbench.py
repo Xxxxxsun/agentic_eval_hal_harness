@@ -213,9 +213,21 @@ class IMOAnswerBenchBenchmark(BaseBenchmark):
                 metrics = raw_task_data["metrics"]
                 result_entry["tool_call_count"] = metrics.get("tool_call_count", 0)
                 result_entry["has_thinking"] = metrics.get("has_thinking", False)
-                result_entry["conversation_history"] = metrics.get(
-                    "conversation_history", []
-                )
+                conversation_history = metrics.get("conversation_history", [])
+                result_entry["conversation_history"] = conversation_history
+
+                # Count successful tool calls by checking if result contains "error"
+                successful_tool_calls = 0
+                failed_tool_calls = 0
+                for turn in conversation_history:
+                    if turn.get("role") == "tool" and "result" in turn:
+                        result_text = str(turn.get("result", ""))
+                        if "error" in result_text.lower():
+                            failed_tool_calls += 1
+                        else:
+                            successful_tool_calls += 1
+                result_entry["successful_tool_calls"] = successful_tool_calls
+                result_entry["failed_tool_calls"] = failed_tool_calls
 
             results[task_id] = result_entry
 
@@ -251,11 +263,19 @@ class IMOAnswerBenchBenchmark(BaseBenchmark):
         total_tool_calls = sum(
             result.get("tool_call_count", 0) for result in eval_results.values()
         )
+        total_successful_tool_calls = sum(
+            result.get("successful_tool_calls", 0) for result in eval_results.values()
+        )
+        total_failed_tool_calls = sum(
+            result.get("failed_tool_calls", 0) for result in eval_results.values()
+        )
 
         return {
             "accuracy": correct_count / total_count if total_count > 0 else 0.0,
             "tasks_with_tool_calls": tasks_with_tools,
             "total_tool_calls": total_tool_calls,
+            "successful_tool_calls": total_successful_tool_calls,
+            "failed_tool_calls": total_failed_tool_calls,
             "category_accuracy": category_accuracy,
             "successful_tasks": [
                 task_id
