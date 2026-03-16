@@ -67,6 +67,8 @@ fi
 # 安装依赖
 apt-get update && apt-get install -y rclone
 pip install qwen_vl_utils ijson
+wget "http://yum.tbsite.net/aliyun-pypi/packages/iagent-adk/iagent_adk-1.1.4-py3-none-any.whl#sha256=dbd7b32311129c2ea10cb87629dade85a45afcc46a9399c5b481986decdecf54" -O iagent_adk-1.1.4-py3-none-any.whl
+pip install iagent_adk-1.1.4-py3-none-any.whl
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

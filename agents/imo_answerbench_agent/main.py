@@ -1,10 +1,10 @@
 import json
-import subprocess
-import tempfile
 import os
 from types import SimpleNamespace
 
 from model_client import chat_completion_with_tools, _get_model_mode
+from iagent.adk.sandbox.iagent_sandbox import IAgentSandbox, CodeLanguage, HttpConfig
+from iagent.adk.sandbox.sandbox_type import SandboxSpecConfig
 
 SYSTEM_PROMPT = """\
 You are an expert mathematician solving challenging Olympiad-level problems \
@@ -34,7 +34,9 @@ a polynomial, an interval, a fraction, or any other mathematical object.
 6. Make sure your ANSWER line is the LAST thing you output, after all reasoning \
 and verification.
 7. If the problem asks to "find all" values/functions, list ALL of them in your answer.
-8. Simplify your answer as much as possible."""
+8. Simplify your answer as much as possible.
+9. IMPORTANT: The code interpreter maintains context across multiple calls. Variables \
+and imports from previous code executions are preserved and can be reused in subsequent calls."""
 
 PYTHON_EXECUTION_TOOL = {
     "type": "function",
@@ -61,39 +63,97 @@ PYTHON_EXECUTION_TOOL = {
 }
 
 
-def execute_python_code(code: str, timeout_seconds: int = 60) -> str:
-    """Execute Python code in a subprocess and return the output."""
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False
-    ) as temp_file:
-        temp_file.write(code)
-        temp_file_path = temp_file.name
+class SandboxManager:
+    """Manages iagent sandbox for code execution with context preservation."""
 
-    try:
-        result = subprocess.run(
-            ["python3", temp_file_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
+    def __init__(self, base_url: str = None):
+        self.base_url = base_url or os.getenv(
+            "IAGENT_SANDBOX_URL", "http://pre-iagent-sandbox-2.alibaba-inc.com"
+        )
+        self.http_config = HttpConfig(
+            timeout=300,
+            max_retries=3,
+            retry_delay=1,
+            retry_on_status=(500, 502, 503, 504),
+            verify_ssl=True,
+            proxies=None,
+            default_headers={"User-Agent": "PythonHttpClient/1.0"},
+        )
+        self.sandbox_spec = SandboxSpecConfig(
+            timeout_seconds=60 * 60 * 24,
+            cpu=4,
+            memory_gb=8,
+            resource="iagent-test",
+            envs={},
+            init_commands=[],
+            template="iagent-sandbox-server",
+            allow_domains=[],
+        )
+        self.sandbox = None
+        self.context = None
+        self.initialized = False
+
+    def initialize(self):
+        """Initialize sandbox and install dependencies."""
+        if self.initialized:
+            return
+
+        self.sandbox = IAgentSandbox(
+            base_url=self.base_url,
+            sandbox_id="",
+            http_config=self.http_config,
+            sandbox_spec=self.sandbox_spec,
         )
 
-        output_parts = []
-        if result.stdout:
-            output_parts.append(result.stdout.strip())
-        if result.returncode != 0 and result.stderr:
-            output_parts.append(f"Error:\n{result.stderr.strip()}")
+        # Install dependencies (only once per sandbox)
+        install_ctx = self.sandbox.create_code_context(
+            code_language=CodeLanguage.PYTHON_3_11
+        )
+        install_cmds = """
+%pip install numpy -i https://mirrors.aliyun.com/pypi/simple/
+%pip install scipy -i https://mirrors.aliyun.com/pypi/simple/
+%pip install sympy -i https://mirrors.aliyun.com/pypi/simple/
+"""
+        self.sandbox.run_code_with_context(install_cmds, context=install_ctx)
 
-        output = "\n".join(output_parts) if output_parts else "(No output)"
-        if len(output) > 10000:
-            output = output[:10000] + "\n... [output truncated]"
-        return output
+        # Create execution context (preserves state across calls)
+        self.context = self.sandbox.create_code_context(
+            code_language=CodeLanguage.PYTHON_3_11
+        )
+        self.initialized = True
 
-    except subprocess.TimeoutExpired:
-        return f"Error: Code execution timed out after {timeout_seconds} seconds."
-    except Exception as execution_error:
-        return f"Error executing code: {str(execution_error)}"
-    finally:
-        os.unlink(temp_file_path)
+    def execute_code(self, code: str) -> str:
+        """Execute code in sandbox and return output."""
+        if not self.initialized:
+            self.initialize()
+
+        try:
+            result = self.sandbox.run_code_with_context(code=code, context=self.context)
+            result_json = result.to_json()
+
+            if result_json.get("success", False):
+                output = result_json.get("outputs", "")
+                output = output.strip() if output else "(No output)"
+                # Truncate very long outputs
+                if len(output) > 10000:
+                    output = output[:10000] + "\n... [output truncated]"
+                return output
+            else:
+                error_msg = result_json.get("error_message") or "Code execution failed"
+                return f"Error: {error_msg}"
+        except Exception as execution_error:
+            return f"Error executing code: {str(execution_error)}"
+
+    def destroy(self):
+        """Destroy the sandbox to release resources."""
+        if self.sandbox is not None:
+            try:
+                self.sandbox.destroy()
+            except Exception:
+                pass
+            self.sandbox = None
+            self.context = None
+            self.initialized = False
 
 
 def _normalize_response(raw_response, mode: str, iteration: int = 0):
@@ -191,96 +251,105 @@ def solve_problem(
     tool_call_count = 0
     has_thinking = "unknown" if mode == "proxy" else False
 
-    for iteration in range(max_iterations):
-        raw_response = chat_completion_with_tools(
-            messages=messages,
-            model=model_name,
-            tools=[PYTHON_EXECUTION_TOOL],
-            temperature=0.0,
-            **{k: v for k, v in kwargs.items() if k not in ("model_name",)},
-        )
+    # Create sandbox for this task (each task gets its own sandbox for isolation)
+    sandbox_manager = SandboxManager(
+        base_url=kwargs.get("sandbox_url")
+    )
 
-        if raw_response is None:
-            break
+    try:
+        for iteration in range(max_iterations):
+            raw_response = chat_completion_with_tools(
+                messages=messages,
+                model=model_name,
+                tools=[PYTHON_EXECUTION_TOOL],
+                temperature=0.0,
+                **{k: v for k, v in kwargs.items() if k not in ("model_name", "sandbox_url")},
+            )
 
-        finish_reason, assistant_message, thinking_content = _normalize_response(
-            raw_response, mode, iteration=iteration
-        )
+            if raw_response is None:
+                break
 
-        if thinking_content and has_thinking != "unknown":
-            has_thinking = True
+            finish_reason, assistant_message, thinking_content = _normalize_response(
+                raw_response, mode, iteration=iteration
+            )
 
-        # Build a record for this turn
-        turn_record = {
-            "iteration": iteration,
-            "role": "assistant",
-            "content": assistant_message.content or "",
-        }
-        if thinking_content:
-            turn_record["thinking_content"] = thinking_content
+            if thinking_content and has_thinking != "unknown":
+                has_thinking = True
 
-        # Record tool calls in this turn
-        if assistant_message.tool_calls:
-            turn_tool_calls = []
-            for tool_call in assistant_message.tool_calls:
-                turn_tool_calls.append({
-                    "id": tool_call.id,
-                    "function_name": tool_call.function.name,
-                    "arguments": tool_call.function.arguments,
-                })
-            turn_record["tool_calls"] = turn_tool_calls
-
-        conversation_history.append(turn_record)
-
-        # Append assistant message to conversation as dict
-        messages.append(_message_to_dict(assistant_message))
-
-        # If the model is done (no tool calls), return the structured result
-        if finish_reason == "stop" or not assistant_message.tool_calls:
-            return {
-                "answer": assistant_message.content or "",
-                "conversation_history": conversation_history,
-                "tool_call_count": tool_call_count,
-                "has_thinking": has_thinking,
+            # Build a record for this turn
+            turn_record = {
+                "iteration": iteration,
+                "role": "assistant",
+                "content": assistant_message.content or "",
             }
+            if thinking_content:
+                turn_record["thinking_content"] = thinking_content
 
-        # Process each tool call
-        for tool_call in assistant_message.tool_calls:
-            if tool_call.function.name == "execute_python":
-                arguments = json.loads(tool_call.function.arguments)
-                code = arguments.get("code", "")
-                execution_result = execute_python_code(code)
-                tool_call_count += 1
+            # Record tool calls in this turn
+            if assistant_message.tool_calls:
+                turn_tool_calls = []
+                for tool_call in assistant_message.tool_calls:
+                    turn_tool_calls.append({
+                        "id": tool_call.id,
+                        "function_name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    })
+                turn_record["tool_calls"] = turn_tool_calls
 
-                # Record tool execution result
-                conversation_history.append({
-                    "iteration": iteration,
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "code": code,
-                    "result": execution_result,
-                })
+            conversation_history.append(turn_record)
 
-                messages.append(
-                    {
+            # Append assistant message to conversation as dict
+            messages.append(_message_to_dict(assistant_message))
+
+            # If the model is done (no tool calls), return the structured result
+            if finish_reason == "stop" or not assistant_message.tool_calls:
+                return {
+                    "answer": assistant_message.content or "",
+                    "conversation_history": conversation_history,
+                    "tool_call_count": tool_call_count,
+                    "has_thinking": has_thinking,
+                }
+
+            # Process each tool call
+            for tool_call in assistant_message.tool_calls:
+                if tool_call.function.name == "execute_python":
+                    arguments = json.loads(tool_call.function.arguments)
+                    code = arguments.get("code", "")
+                    execution_result = sandbox_manager.execute_code(code)
+                    tool_call_count += 1
+
+                    # Record tool execution result
+                    conversation_history.append({
+                        "iteration": iteration,
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": execution_result,
-                    }
-                )
+                        "code": code,
+                        "result": execution_result,
+                    })
 
-    # If we exhausted iterations, return whatever we have
-    last_content = (
-        messages[-1].get("content", "")
-        if isinstance(messages[-1], dict)
-        else getattr(messages[-1], "content", "")
-    )
-    return {
-        "answer": last_content or "",
-        "conversation_history": conversation_history,
-        "tool_call_count": tool_call_count,
-        "has_thinking": has_thinking,
-    }
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": execution_result,
+                        }
+                    )
+
+        # If we exhausted iterations, return whatever we have
+        last_content = (
+            messages[-1].get("content", "")
+            if isinstance(messages[-1], dict)
+            else getattr(messages[-1], "content", "")
+        )
+        return {
+            "answer": last_content or "",
+            "conversation_history": conversation_history,
+            "tool_call_count": tool_call_count,
+            "has_thinking": has_thinking,
+        }
+    finally:
+        # Always destroy sandbox after task completes
+        sandbox_manager.destroy()
 
 
 def run(input: dict[str, dict], **kwargs) -> dict[str, dict]:
