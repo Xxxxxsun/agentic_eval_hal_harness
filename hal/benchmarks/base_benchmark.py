@@ -157,23 +157,19 @@ class BaseBenchmark(ABC):
             # Calculate multi-sample metrics (avg@N and pass@N)
             sampling_metrics = self._calculate_sampling_metrics(eval_results, num_samples)
             
-            # Create flattened eval_results for get_metrics (use first sample for base accuracy)
-            flattened_eval_results = {}
-            for task_id, samples in eval_results.items():
-                if isinstance(samples, list) and len(samples) > 0:
-                    # Use first sample's result for base metrics
-                    first_sample = samples[0]
-                    if isinstance(first_sample, dict) and "eval_result" in first_sample:
-                        flattened_eval_results[task_id] = first_sample["eval_result"]
-                    else:
-                        flattened_eval_results[task_id] = first_sample
-                else:
-                    flattened_eval_results[task_id] = samples
-            eval_results_for_metrics = flattened_eval_results
+            # For multi-sample mode, we don't need base metrics from get_metrics
+            # All relevant metrics are in sampling_metrics
+            eval_results_for_metrics = None
         else:
             eval_results_for_metrics = eval_results
 
         # Prepare results summary
+        # For multi-sample mode, skip base metrics and only use sampling_metrics
+        if eval_results_for_metrics is not None:
+            base_metrics = self.get_metrics(eval_results_for_metrics)
+        else:
+            base_metrics = {}
+
         results_summary = {
             "config": {
                 "agent_name": agent_name,
@@ -185,7 +181,7 @@ class BaseBenchmark(ABC):
                 "prompt_sensitivity": prompt_sensitivity,
             },
             "results": {
-                **self.get_metrics(eval_results_for_metrics),
+                **base_metrics,
                 "total_cost": total_cost,
                 "latencies": latency_dict,
             },
@@ -245,17 +241,14 @@ class BaseBenchmark(ABC):
             num_samples: Number of samples per task
 
         Returns:
-            Dictionary with avg@N, pass@N, and averaged tool call metrics
+            Dictionary with avg@N, pass@N, and averaged tool call metrics per round
         """
         task_avg_scores = []
         task_pass_scores = []
         per_task_details = {}
 
-        # Aggregate tool call statistics across all samples
-        all_tool_call_counts = []
-        all_successful_tool_calls = []
-        all_failed_tool_calls = []
-        all_has_tool_calls = []  # Track whether each sample used tools
+        # Per-round statistics: {sample_idx: {tool_calls: X, successful: Y, ...}}
+        per_round_stats: Dict[int, Dict[str, int]] = {}
 
         for task_id, samples in eval_results.items():
             if not isinstance(samples, list):
@@ -263,12 +256,8 @@ class BaseBenchmark(ABC):
 
             # Extract correctness and tool stats from each sample's eval_result
             correct_flags = []
-            task_tool_calls = []
-            task_successful_calls = []
-            task_failed_calls = []
-            task_has_tool_calls = []
 
-            for sample_data in samples:
+            for sample_idx, sample_data in enumerate(samples):
                 if isinstance(sample_data, dict):
                     eval_result = sample_data.get("eval_result", sample_data)
                     if isinstance(eval_result, dict):
@@ -276,10 +265,22 @@ class BaseBenchmark(ABC):
                         correct = eval_result.get("correct", False)
                         # Extract tool call statistics
                         tool_count = eval_result.get("tool_call_count", 0)
-                        task_tool_calls.append(tool_count)
-                        task_successful_calls.append(eval_result.get("successful_tool_calls", 0))
-                        task_failed_calls.append(eval_result.get("failed_tool_calls", 0))
-                        task_has_tool_calls.append(1 if tool_count > 0 else 0)
+                        successful_count = eval_result.get("successful_tool_calls", 0)
+                        failed_count = eval_result.get("failed_tool_calls", 0)
+                        has_tool_call = 1 if tool_count > 0 else 0
+
+                        # Aggregate per-round stats
+                        if sample_idx not in per_round_stats:
+                            per_round_stats[sample_idx] = {
+                                "tool_calls": 0,
+                                "successful_tool_calls": 0,
+                                "failed_tool_calls": 0,
+                                "tasks_with_tool_calls": 0,
+                            }
+                        per_round_stats[sample_idx]["tool_calls"] += tool_count
+                        per_round_stats[sample_idx]["successful_tool_calls"] += successful_count
+                        per_round_stats[sample_idx]["failed_tool_calls"] += failed_count
+                        per_round_stats[sample_idx]["tasks_with_tool_calls"] += has_tool_call
                     else:
                         correct = bool(eval_result)
                     correct_flags.append(1 if correct else 0)
@@ -292,12 +293,6 @@ class BaseBenchmark(ABC):
                 # pass@N: whether at least one sample is correct
                 pass_score = 1 if any(correct_flags) else 0
                 task_pass_scores.append(pass_score)
-
-                # Aggregate tool call stats
-                all_tool_call_counts.extend(task_tool_calls)
-                all_successful_tool_calls.extend(task_successful_calls)
-                all_failed_tool_calls.extend(task_failed_calls)
-                all_has_tool_calls.extend(task_has_tool_calls)
 
                 per_task_details[task_id] = {
                     "correct_flags": correct_flags,
@@ -313,28 +308,36 @@ class BaseBenchmark(ABC):
             overall_avg = 0.0
             overall_pass = 0.0
 
-        # Calculate averaged tool call metrics
-        num_total_samples = len(all_tool_call_counts)
-        if num_total_samples > 0:
-            avg_tool_calls_per_sample = sum(all_tool_call_counts) / num_total_samples
-            avg_successful_tool_calls_per_sample = sum(all_successful_tool_calls) / num_total_samples
-            avg_failed_tool_calls_per_sample = sum(all_failed_tool_calls) / num_total_samples
-            avg_tasks_with_tool_calls_per_sample = sum(all_has_tool_calls) / num_total_samples
+        # Calculate averaged tool call metrics per round (average across all rounds)
+        num_rounds = len(per_round_stats)
+        if num_rounds > 0:
+            avg_tool_calls_per_round = sum(
+                s["tool_calls"] for s in per_round_stats.values()
+            ) / num_rounds
+            avg_successful_tool_calls_per_round = sum(
+                s["successful_tool_calls"] for s in per_round_stats.values()
+            ) / num_rounds
+            avg_failed_tool_calls_per_round = sum(
+                s["failed_tool_calls"] for s in per_round_stats.values()
+            ) / num_rounds
+            avg_tasks_with_tool_calls_per_round = sum(
+                s["tasks_with_tool_calls"] for s in per_round_stats.values()
+            ) / num_rounds
         else:
-            avg_tool_calls_per_sample = 0.0
-            avg_successful_tool_calls_per_sample = 0.0
-            avg_failed_tool_calls_per_sample = 0.0
-            avg_tasks_with_tool_calls_per_sample = 0.0
+            avg_tool_calls_per_round = 0.0
+            avg_successful_tool_calls_per_round = 0.0
+            avg_failed_tool_calls_per_round = 0.0
+            avg_tasks_with_tool_calls_per_round = 0.0
 
         return {
             f"avg@{num_samples}": overall_avg,
             f"pass@{num_samples}": overall_pass,
             "num_samples": num_samples,
             "num_tasks": len(task_avg_scores),
-            "avg_tool_calls_per_sample": avg_tool_calls_per_sample,
-            "avg_successful_tool_calls_per_sample": avg_successful_tool_calls_per_sample,
-            "avg_failed_tool_calls_per_sample": avg_failed_tool_calls_per_sample,
-            "avg_tasks_with_tool_calls_per_sample": avg_tasks_with_tool_calls_per_sample,
+            "avg_tool_calls_per_round": avg_tool_calls_per_round,
+            "avg_successful_tool_calls_per_round": avg_successful_tool_calls_per_round,
+            "avg_failed_tool_calls_per_round": avg_failed_tool_calls_per_round,
+            "avg_tasks_with_tool_calls_per_round": avg_tasks_with_tool_calls_per_round,
             "per_task_details": per_task_details,
         }
 
