@@ -82,6 +82,7 @@ class BaseBenchmark(ABC):
         agent_output: Dict[str, Any] = None,
         upload: bool = False,
         prompt_sensitivity: bool = False,
+        num_samples: int = 1,
     ) -> Dict[str, Any]:
         """Process evaluation results and optionally upload"""
 
@@ -123,6 +124,8 @@ class BaseBenchmark(ABC):
 
         # Calculate prompt sensitivity metrics if enabled
         sensitivity_metrics = None
+        sampling_metrics = None
+        
         if prompt_sensitivity:
             sensitivity_metrics = self._calculate_sensitivity_metrics(
                 eval_results, agent_output
@@ -149,6 +152,23 @@ class BaseBenchmark(ABC):
                 else:
                     # Shouldn't happen, but handle gracefully
                     flattened_eval_results[task_id] = variations
+            eval_results_for_metrics = flattened_eval_results
+        elif num_samples > 1:
+            # Calculate multi-sample metrics (avg@N and pass@N)
+            sampling_metrics = self._calculate_sampling_metrics(eval_results, num_samples)
+            
+            # Create flattened eval_results for get_metrics (use first sample for base accuracy)
+            flattened_eval_results = {}
+            for task_id, samples in eval_results.items():
+                if isinstance(samples, list) and len(samples) > 0:
+                    # Use first sample's result for base metrics
+                    first_sample = samples[0]
+                    if isinstance(first_sample, dict) and "eval_result" in first_sample:
+                        flattened_eval_results[task_id] = first_sample["eval_result"]
+                    else:
+                        flattened_eval_results[task_id] = first_sample
+                else:
+                    flattened_eval_results[task_id] = samples
             eval_results_for_metrics = flattened_eval_results
         else:
             eval_results_for_metrics = eval_results
@@ -180,6 +200,13 @@ class BaseBenchmark(ABC):
         if sensitivity_metrics:
             results_summary["prompt_sensitivity_metrics"] = sensitivity_metrics
 
+        # Add sampling metrics if available (avg@N and pass@N)
+        if sampling_metrics:
+            results_summary["sampling_metrics"] = sampling_metrics
+            # Also add to results for easy access
+            results_summary["results"].update(sampling_metrics)
+            logger.info(f"Sampling metrics (N={num_samples}): avg@{num_samples}={sampling_metrics.get(f'avg@{num_samples}', 0):.4f}, pass@{num_samples}={sampling_metrics.get(f'pass@{num_samples}', 0):.4f}")
+
         # Include task metrics if available from agent output
         if task_metrics:
             results_summary["task_metrics"] = task_metrics
@@ -205,6 +232,71 @@ class BaseBenchmark(ABC):
     def get_metrics(self, eval_results: Dict[str, Any]) -> Dict[str, Any]:
         """Extract metrics from evaluation results"""
         pass
+
+    def _calculate_sampling_metrics(
+        self, eval_results: Dict[str, Any], num_samples: int
+    ) -> Dict[str, Any]:
+        """
+        Calculate avg@N and pass@N metrics from multi-sample evaluation results.
+
+        Args:
+            eval_results: Dictionary containing evaluation results per task per sample
+                Format: {task_id: [{sample_id: 0, eval_result: {...}}, ...]}
+            num_samples: Number of samples per task
+
+        Returns:
+            Dictionary with avg@N and pass@N metrics
+        """
+        task_avg_scores = []
+        task_pass_scores = []
+        per_task_details = {}
+
+        for task_id, samples in eval_results.items():
+            if not isinstance(samples, list):
+                continue
+
+            # Extract correctness from each sample's eval_result
+            correct_flags = []
+            for sample_data in samples:
+                if isinstance(sample_data, dict):
+                    eval_result = sample_data.get("eval_result", sample_data)
+                    if isinstance(eval_result, dict):
+                        # Check for 'correct' field (used by aime2025, imo_answerbench)
+                        correct = eval_result.get("correct", False)
+                    else:
+                        correct = bool(eval_result)
+                    correct_flags.append(1 if correct else 0)
+
+            if correct_flags:
+                # avg@N: average correctness for this task
+                avg_score = sum(correct_flags) / len(correct_flags)
+                task_avg_scores.append(avg_score)
+
+                # pass@N: whether at least one sample is correct
+                pass_score = 1 if any(correct_flags) else 0
+                task_pass_scores.append(pass_score)
+
+                per_task_details[task_id] = {
+                    "correct_flags": correct_flags,
+                    "avg_score": avg_score,
+                    "pass_score": pass_score,
+                }
+
+        # Calculate overall metrics
+        if task_avg_scores:
+            overall_avg = sum(task_avg_scores) / len(task_avg_scores)
+            overall_pass = sum(task_pass_scores) / len(task_pass_scores)
+        else:
+            overall_avg = 0.0
+            overall_pass = 0.0
+
+        return {
+            f"avg@{num_samples}": overall_avg,
+            f"pass@{num_samples}": overall_pass,
+            "num_samples": num_samples,
+            "num_tasks": len(task_avg_scores),
+            "per_task_details": per_task_details,
+        }
 
     def _calculate_sensitivity_metrics(
         self, eval_results: Dict[str, Any], agent_output: Dict[str, Any]

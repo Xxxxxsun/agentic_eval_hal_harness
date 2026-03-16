@@ -143,6 +143,12 @@ load_dotenv()
     type=str,
     help="Comma-separated list of specific task IDs to run (e.g., '0,1,5,12'). Only these tasks will be executed.",
 )
+@click.option(
+    "--num_samples",
+    default=1,
+    type=int,
+    help="Number of inference samples per task for computing avg@N and pass@N metrics (default: 1)",
+)
 def main(
     config,
     benchmark,
@@ -168,6 +174,7 @@ def main(
     task_timeout,
     results_dir,
     task_ids,
+    num_samples,
     **kwargs,
 ):
     """Run agent evaluation on specified benchmark with given model."""
@@ -277,6 +284,7 @@ def main(
                 task_timeout=task_timeout,
                 results_dir=results_dir,
                 task_ids=task_ids,
+                num_samples=num_samples,
             )
 
             # Run evaluation

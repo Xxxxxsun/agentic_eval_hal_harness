@@ -40,6 +40,7 @@ class AgentRunner:
         task_timeout: int = 600,
         results_dir: str = "results",
         task_ids: Optional[str] = None,
+        num_samples: int = 1,
     ):
         # Validate agent_function format
         if not isinstance(agent_function, str) or "." not in agent_function:
@@ -153,6 +154,7 @@ class AgentRunner:
         self.variation_strength = variation_strength
         self.variation_index = variation_index
         self.task_ids = task_ids
+        self.num_samples = num_samples
 
         # Initialize fault injector if enabled
         self.fault_injector = None
@@ -419,6 +421,38 @@ class AgentRunner:
                         )
 
                 agent_output = all_variations_output
+            elif self.num_samples > 1:
+                # Multi-sample mode: Run agent N times on each task for avg@N and pass@N
+                all_samples_output = {}
+                
+                for sample_idx in range(self.num_samples):
+                    logger.info(f"Running sample {sample_idx + 1}/{self.num_samples}...")
+                    
+                    with create_progress() as progress:
+                        task = progress.add_task(
+                            f"Running agents (sample {sample_idx + 1}/{self.num_samples})...",
+                            total=len(dataset),
+                        )
+                        sample_output = await self.runner.run_agent(
+                            dataset=dataset,
+                            agent_function=self.agent_function,
+                            agent_dir=self.agent_dir,
+                            agent_args=self.agent_args,
+                            run_id=self.run_id,
+                            benchmark=self.benchmark,
+                            task=task,
+                            progress=progress,
+                        )
+                    
+                    # Store outputs with sample index
+                    for task_id, output in sample_output.items():
+                        if task_id not in all_samples_output:
+                            all_samples_output[task_id] = []
+                        all_samples_output[task_id].append(
+                            {"sample_id": sample_idx, "output": output}
+                        )
+                
+                agent_output = all_samples_output
             else:
                 # Normal mode: Run agent on all tasks once
                 with create_progress() as progress:
@@ -510,6 +544,34 @@ class AgentRunner:
                         eval_results[task_id].append(
                             {"variation_id": var_id, "score": float(score)}
                         )
+        elif self.num_samples > 1:
+            # Multi-sample mode: Evaluate each sample separately
+            if weave_client is not None:
+                weave.finish()
+
+            eval_results = {}
+
+            for task_id, samples in agent_output.items():
+                eval_results[task_id] = []
+
+                for sample_data in samples:
+                    sample_id = sample_data["sample_id"]
+                    sample_output = sample_data["output"]
+
+                    # Create single-task output for evaluation
+                    single_output = {task_id: sample_output}
+
+                    # Evaluate this sample
+                    sample_eval = self.benchmark.evaluate_output(
+                        single_output, self.run_id
+                    )
+
+                    # Store result with sample id
+                    if task_id in sample_eval:
+                        eval_result = sample_eval[task_id]
+                        eval_results[task_id].append(
+                            {"sample_id": sample_id, "eval_result": eval_result}
+                        )
         else:
             # Normal mode: Check for remaining tasks
             remaining = self.get_remaining_tasks(dataset)
@@ -538,5 +600,6 @@ class AgentRunner:
             agent_output=agent_output,
             upload=upload,
             prompt_sensitivity=self.prompt_sensitivity,
+            num_samples=self.num_samples,
         )
         return results
