@@ -276,6 +276,12 @@ class DockerRunner:
             temp_agent_dir = temp_dir
             shutil.copytree(agent_dir, temp_agent_dir, dirs_exist_ok=True)
 
+            # Copy common module if it exists (for shared utilities like SandboxManager)
+            agent_parent_dir = Path(agent_dir).parent
+            common_dir = agent_parent_dir / "common"
+            if common_dir.exists() and common_dir.is_dir():
+                shutil.copytree(common_dir, temp_dir / "common", dirs_exist_ok=True)
+
             # Write input and args files
             with open(temp_dir / "input.json", "w") as f:
                 json.dump({task_id: input_data}, f)

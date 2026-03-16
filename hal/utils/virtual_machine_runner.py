@@ -6,6 +6,7 @@ import tempfile
 import shutil
 import uuid
 import logging
+from pathlib import Path
 from typing import Dict, Any, Optional
 from .virtual_machine_manager import VirtualMachineManager
 from ..benchmarks.base_benchmark import BaseBenchmark
@@ -166,6 +167,20 @@ class VirtualMachineRunner:
                         vm_name,
                         agent_dir,
                     )
+
+                    # Copy common module if it exists (for shared utilities like SandboxManager)
+                    agent_parent_dir = Path(agent_dir).parent
+                    common_dir = agent_parent_dir / "common"
+                    if common_dir.exists() and common_dir.is_dir():
+                        logger.info(
+                            f"Task {task_id}: Copying common module to VM {vm_name}"
+                        )
+                        await asyncio.to_thread(
+                            self.vm_manager.compress_and_copy_files_to_vm,
+                            vm_name,
+                            str(common_dir),
+                        )
+
                     logger.info(
                         f"Task {task_id}: Finished copying all files to VM {vm_name}"
                     )
