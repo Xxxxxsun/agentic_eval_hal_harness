@@ -133,9 +133,9 @@ load_dotenv()
 )
 @click.option(
     "--results_dir",
-    default="results",
+    default=os.environ.get("PRIMUS_OUTPUT_DIR", "results"),
     type=str,
-    help="Base directory for storing results (default: results)",
+    help="Base directory for storing results (default: $PRIMUS_OUTPUT_DIR or 'results')",
 )
 @click.option(
     "--task_ids",
