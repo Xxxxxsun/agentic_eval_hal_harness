@@ -245,24 +245,41 @@ class BaseBenchmark(ABC):
             num_samples: Number of samples per task
 
         Returns:
-            Dictionary with avg@N and pass@N metrics
+            Dictionary with avg@N, pass@N, and averaged tool call metrics
         """
         task_avg_scores = []
         task_pass_scores = []
         per_task_details = {}
 
+        # Aggregate tool call statistics across all samples
+        all_tool_call_counts = []
+        all_successful_tool_calls = []
+        all_failed_tool_calls = []
+        all_has_tool_calls = []  # Track whether each sample used tools
+
         for task_id, samples in eval_results.items():
             if not isinstance(samples, list):
                 continue
 
-            # Extract correctness from each sample's eval_result
+            # Extract correctness and tool stats from each sample's eval_result
             correct_flags = []
+            task_tool_calls = []
+            task_successful_calls = []
+            task_failed_calls = []
+            task_has_tool_calls = []
+
             for sample_data in samples:
                 if isinstance(sample_data, dict):
                     eval_result = sample_data.get("eval_result", sample_data)
                     if isinstance(eval_result, dict):
                         # Check for 'correct' field (used by aime2025, imo_answerbench)
                         correct = eval_result.get("correct", False)
+                        # Extract tool call statistics
+                        tool_count = eval_result.get("tool_call_count", 0)
+                        task_tool_calls.append(tool_count)
+                        task_successful_calls.append(eval_result.get("successful_tool_calls", 0))
+                        task_failed_calls.append(eval_result.get("failed_tool_calls", 0))
+                        task_has_tool_calls.append(1 if tool_count > 0 else 0)
                     else:
                         correct = bool(eval_result)
                     correct_flags.append(1 if correct else 0)
@@ -275,6 +292,12 @@ class BaseBenchmark(ABC):
                 # pass@N: whether at least one sample is correct
                 pass_score = 1 if any(correct_flags) else 0
                 task_pass_scores.append(pass_score)
+
+                # Aggregate tool call stats
+                all_tool_call_counts.extend(task_tool_calls)
+                all_successful_tool_calls.extend(task_successful_calls)
+                all_failed_tool_calls.extend(task_failed_calls)
+                all_has_tool_calls.extend(task_has_tool_calls)
 
                 per_task_details[task_id] = {
                     "correct_flags": correct_flags,
@@ -290,11 +313,28 @@ class BaseBenchmark(ABC):
             overall_avg = 0.0
             overall_pass = 0.0
 
+        # Calculate averaged tool call metrics
+        num_total_samples = len(all_tool_call_counts)
+        if num_total_samples > 0:
+            avg_tool_calls_per_sample = sum(all_tool_call_counts) / num_total_samples
+            avg_successful_tool_calls_per_sample = sum(all_successful_tool_calls) / num_total_samples
+            avg_failed_tool_calls_per_sample = sum(all_failed_tool_calls) / num_total_samples
+            avg_tasks_with_tool_calls_per_sample = sum(all_has_tool_calls) / num_total_samples
+        else:
+            avg_tool_calls_per_sample = 0.0
+            avg_successful_tool_calls_per_sample = 0.0
+            avg_failed_tool_calls_per_sample = 0.0
+            avg_tasks_with_tool_calls_per_sample = 0.0
+
         return {
             f"avg@{num_samples}": overall_avg,
             f"pass@{num_samples}": overall_pass,
             "num_samples": num_samples,
             "num_tasks": len(task_avg_scores),
+            "avg_tool_calls_per_sample": avg_tool_calls_per_sample,
+            "avg_successful_tool_calls_per_sample": avg_successful_tool_calls_per_sample,
+            "avg_failed_tool_calls_per_sample": avg_failed_tool_calls_per_sample,
+            "avg_tasks_with_tool_calls_per_sample": avg_tasks_with_tool_calls_per_sample,
             "per_task_details": per_task_details,
         }
 

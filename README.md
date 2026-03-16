@@ -80,6 +80,10 @@
 
 - **avg@N**: 所有任务的平均正确率（每个任务 N 次采样的平均值再取平均）
 - **pass@N**: 至少有一次正确的任务比例
+- **avg_tool_calls_per_sample**: 每次采样的平均工具调用次数
+- **avg_successful_tool_calls_per_sample**: 每次采样的平均成功工具调用次数
+- **avg_failed_tool_calls_per_sample**: 每次采样的平均失败工具调用次数
+- **avg_tasks_with_tool_calls_per_sample**: 每次采样中使用了工具的任务平均比例
 
 ## 环境要求
 
