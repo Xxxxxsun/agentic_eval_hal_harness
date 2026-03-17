@@ -95,11 +95,11 @@ class BaseBenchmark(ABC):
             json.dump(eval_results, f, indent=2)
 
         # Extract task metrics from agent output if available
-        task_metrics = {}
-        if agent_output:
-            for task_id, task_data in agent_output.items():
-                if isinstance(task_data, dict) and "metrics" in task_data:
-                    task_metrics[task_id] = task_data["metrics"]
+        # task_metrics = {}
+        # if agent_output:
+        #     for task_id, task_data in agent_output.items():
+        #         if isinstance(task_data, dict) and "metrics" in task_data:
+        #             task_metrics[task_id] = task_data["metrics"]
 
         # Get cost and usage metrics (gracefully handle Weave connection failures)
         try:
@@ -203,8 +203,8 @@ class BaseBenchmark(ABC):
             logger.info(f"Sampling metrics (N={num_samples}): avg@{num_samples}={sampling_metrics.get(f'avg@{num_samples}', 0):.4f}, pass@{num_samples}={sampling_metrics.get(f'pass@{num_samples}', 0):.4f}")
 
         # Include task metrics if available from agent output
-        if task_metrics:
-            results_summary["task_metrics"] = task_metrics
+        # if task_metrics:
+        #     results_summary["task_metrics"] = task_metrics
 
         # Save full results
         upload_path = os.path.join(run_dir, f"{run_id}_UPLOAD.json")
