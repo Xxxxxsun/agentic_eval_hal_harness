@@ -331,18 +331,9 @@ class LocalRunner:
             if str(temp_dir) in self.temp_dirs:
                 self.temp_dirs.remove(str(temp_dir))
             try:
-                # Copy only essential files to log_dir (not the entire agent code)
-                task_log_dir = Path(os.path.join(self.log_dir, task_id))
-                task_log_dir.mkdir(parents=True, exist_ok=True)
-                for filename in ["agent_args.json", "input.json", "output.json", "error.log"]:
-                    src_file = temp_dir / filename
-                    if src_file.exists():
-                        shutil.copy2(src_file, task_log_dir / filename)
-                # Remove temp directory
                 shutil.rmtree(temp_dir)
             except Exception as e:
-                error_msg = f"Warning: Failed to cleanup {temp_dir}: {e}"
-                logger.debug(error_msg)
+                logger.debug(f"Warning: Failed to cleanup {temp_dir}: {e}")
 
     def _create_runner_script(
         self, agent_function: str, task_id: str, run_id: str

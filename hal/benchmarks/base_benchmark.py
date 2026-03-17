@@ -185,7 +185,6 @@ class BaseBenchmark(ABC):
                 "total_cost": total_cost,
                 "latencies": latency_dict,
             },
-            "raw_eval_results": eval_results,
             "raw_logging_results": raw_logging,
             "total_usage": total_usage,
             "total_cost": total_cost,

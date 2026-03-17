@@ -602,4 +602,19 @@ class AgentRunner:
             prompt_sensitivity=self.prompt_sensitivity,
             num_samples=self.num_samples,
         )
+
+        # Clean up RAW_SUBMISSIONS.jsonl after evaluation is complete
+        run_dir = self.benchmark.get_run_dir(self.run_id)
+        raw_submissions_path = os.path.join(
+            run_dir, f"{self.run_id}_RAW_SUBMISSIONS.jsonl"
+        )
+        if os.path.exists(raw_submissions_path):
+            try:
+                os.remove(raw_submissions_path)
+                logger.info(f"Removed raw submissions file: {raw_submissions_path}")
+            except OSError as remove_error:
+                logger.warning(
+                    f"Failed to remove raw submissions file: {remove_error}"
+                )
+
         return results

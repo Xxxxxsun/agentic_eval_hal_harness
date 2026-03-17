@@ -135,7 +135,6 @@ class AIME2025Benchmark(BaseBenchmark):
             if isinstance(raw_task_data, dict) and "metrics" in raw_task_data:
                 metrics = raw_task_data["metrics"]
                 result_entry["tool_call_count"] = metrics.get("tool_call_count", 0)
-                result_entry["has_thinking"] = metrics.get("has_thinking", False)
                 conversation_history = metrics.get("conversation_history", [])
                 result_entry["conversation_history"] = conversation_history
 
