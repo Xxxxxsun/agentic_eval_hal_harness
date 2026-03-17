@@ -127,13 +127,19 @@ class IMOAnswerBenchBenchmark(BaseBenchmark):
 
         self.benchmark = self._load_dataset()
 
-        # Grader model: defaults to gpt-4o, configurable via env or config
+        # Grader model: configurable via env or config (no default, must be set)
         if isinstance(config, dict):
             self.grader_model = config.get(
-                "grader_model", os.getenv("GRADER_MODEL", "gpt-4o")
+                "grader_model", os.getenv("GRADER_MODEL")
             )
         else:
-            self.grader_model = os.getenv("GRADER_MODEL", "gpt-4o")
+            self.grader_model = os.getenv("GRADER_MODEL")
+
+        if not self.grader_model:
+            raise ValueError(
+                "GRADER_MODEL must be set via environment variable or config. "
+                "Set GRADER_MODEL env var or pass grader_model in config."
+            )
 
     def _load_dataset(self) -> Dict[str, Any]:
         """Load IMO-AnswerBench dataset from HuggingFace."""

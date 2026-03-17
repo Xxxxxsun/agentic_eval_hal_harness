@@ -141,6 +141,7 @@ if [[ "${RANK}" == "0" ]]; then
     export HF_ENDPOINT=https://hf-mirror.com
     export OPENAI_BASE_URL=http://localhost:8234/v1
     export OPENAI_API_KEY=empty
+    export GRADER_MODEL=${MODEL_NAME}
     pip install -e .
     
     # 构建 hal-eval 命令
