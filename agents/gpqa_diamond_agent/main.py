@@ -55,14 +55,23 @@ PYTHON_EXECUTION_TOOL = {
 
 
 def _format_question_prompt(question: str, choices: dict) -> str:
-    """Format the question and choices into a clear prompt for the model."""
-    lines = [question, "", "Answer choices:"]
-    for label in ["A", "B", "C", "D"]:
-        if label in choices:
-            lines.append(f"  {label}. {choices[label]}")
-    lines.append("")
-    lines.append("Please analyze the question carefully and select the correct answer (A, B, C, or D).")
-    return "\n".join(lines)
+    """Format the question and choices into a clear prompt for the model.
+
+    If choices dict is non-empty, appends formatted A/B/C/D options.
+    If choices dict is empty (pre-processed dataset where choices are already
+    embedded in the question text), uses the question text as-is.
+    """
+    if choices:
+        lines = [question, "", "Answer choices:"]
+        for label in ["A", "B", "C", "D"]:
+            if label in choices:
+                lines.append(f"  {label}. {choices[label]}")
+        lines.append("")
+        lines.append("Please analyze the question carefully and select the correct answer (A, B, C, or D).")
+        return "\n".join(lines)
+
+    # Pre-processed format: choices are already in the question text
+    return question + "\n\nPlease analyze the question carefully and select the correct answer (A, B, C, or D)."
 
 
 def _normalize_response(raw_response, mode: str, iteration: int = 0):

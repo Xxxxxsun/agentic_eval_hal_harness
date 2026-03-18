@@ -105,38 +105,149 @@ class GPQADiamondBenchmark(BaseBenchmark):
         self.benchmark = self._load_dataset()
 
     def _load_dataset(self) -> Dict[str, Any]:
-        """Load GPQA-Diamond dataset from HuggingFace."""
-        try:
-            from datasets import load_dataset
+        """Load GPQA-Diamond dataset from HuggingFace.
 
+        Tries the official gated dataset first (requires HF_TOKEN).
+        Falls back to public community datasets if authentication fails.
+
+        Handles two dataset formats:
+          - Official (Idavidrein/gpqa): separate columns for question, correct
+            answer, incorrect answers, and subdomain. Choices are shuffled
+            deterministically.
+          - Pre-processed (fingertap/GPQA-Diamond): only 'question' (with
+            choices embedded in text) and 'answer' (a letter A-D).
+        """
+        from datasets import load_dataset
+
+        dataset = None
+        dataset_source = None
+
+        # Attempt 1: Official gated dataset (requires HuggingFace authentication)
+        try:
             dataset = load_dataset("Idavidrein/gpqa", "gpqa_diamond", split="train")
-        except Exception as load_error:
-            raise RuntimeError(
-                f"Failed to load GPQA-Diamond from HuggingFace. "
-                f"Ensure the `datasets` library is installed "
-                f"(`pip install datasets`) and you have internet access. "
-                f"Error: {load_error}"
+            dataset_source = "Idavidrein/gpqa"
+        except Exception as first_error:
+            logger.warning(
+                f"Failed to load official GPQA dataset (may require HF_TOKEN): {first_error}. "
+                "Trying public fallback datasets..."
             )
+
+        # Attempt 2: Public community dataset (fingertap/GPQA-Diamond)
+        if dataset is None:
+            try:
+                dataset = load_dataset("fingertap/GPQA-Diamond", split="train")
+                dataset_source = "fingertap/GPQA-Diamond"
+            except Exception as second_error:
+                logger.warning(
+                    f"Failed to load fingertap/GPQA-Diamond: {second_error}. "
+                    "Trying another fallback..."
+                )
+
+        # Attempt 3: Another public dataset (nikhilchandak/GPQA-diamond-free)
+        if dataset is None:
+            try:
+                dataset = load_dataset("nikhilchandak/GPQA-diamond-free", split="train")
+                dataset_source = "nikhilchandak/GPQA-diamond-free"
+            except Exception as third_error:
+                raise RuntimeError(
+                    f"Failed to load GPQA-Diamond from any source. "
+                    f"Options: 1) Set HF_TOKEN env var for official dataset access, "
+                    f"2) Run `huggingface-cli login`, "
+                    f"3) Ensure internet access. "
+                    f"Last error: {third_error}"
+                )
+
+        logger.info(f"Loading GPQA-Diamond from: {dataset_source}")
+
+        column_names = set(dataset.column_names)
+        is_preprocessed = (
+            "question" in column_names
+            and "answer" in column_names
+            and "Correct Answer" not in column_names
+            and "correct_answer" not in column_names
+        )
+
+        if is_preprocessed:
+            return self._parse_preprocessed_dataset(dataset, dataset_source)
+        return self._parse_official_dataset(dataset, dataset_source, column_names)
+
+    def _parse_preprocessed_dataset(
+        self, dataset, dataset_source: str
+    ) -> Dict[str, Any]:
+        """Parse a pre-processed dataset where choices are already embedded
+        in the question text (as A./B./C./D.) and the answer is a letter.
+
+        Example question text:
+            "What is ...?\n\nA. Option one.\nB. Option two.\nC. ...\nD. ..."
+        """
+        benchmark = {}
+        for row_idx, row in enumerate(dataset):
+            task_id = f"gpqa_diamond_{row_idx}"
+            question_text = row["question"]
+            correct_label = row["answer"].strip().upper()
+
+            # Choices are already embedded in question_text, so we pass an
+            # empty dict. The agent will receive the full question_text as-is.
+            benchmark[task_id] = {
+                "question": question_text,
+                "choices": {},
+                "answer": correct_label,
+                "subdomain": "Unknown",
+            }
+
+        logger.info(
+            f"Loaded {len(benchmark)} GPQA-Diamond problems from {dataset_source} "
+            "(pre-processed format)"
+        )
+        return benchmark
+
+    def _parse_official_dataset(
+        self, dataset, dataset_source: str, column_names: set
+    ) -> Dict[str, Any]:
+        """Parse the official dataset with separate columns for question,
+        correct answer, incorrect answers, and subdomain."""
+        question_col = "Question" if "Question" in column_names else "question"
+        correct_col = (
+            "Correct Answer" if "Correct Answer" in column_names
+            else "correct_answer" if "correct_answer" in column_names
+            else "Correct_Answer"
+        )
+        incorrect_cols = []
+        for variant in [
+            ["Incorrect Answer 1", "Incorrect Answer 2", "Incorrect Answer 3"],
+            ["incorrect_answer_1", "incorrect_answer_2", "incorrect_answer_3"],
+            ["Incorrect_Answer_1", "Incorrect_Answer_2", "Incorrect_Answer_3"],
+        ]:
+            if variant[0] in column_names:
+                incorrect_cols = variant
+                break
+
+        if not incorrect_cols:
+            raise RuntimeError(
+                f"Cannot find incorrect answer columns in dataset {dataset_source}. "
+                f"Available columns: {column_names}"
+            )
+
+        subdomain_col = (
+            "Subdomain" if "Subdomain" in column_names
+            else "subdomain" if "subdomain" in column_names
+            else None
+        )
 
         benchmark = {}
         for row_idx, row in enumerate(dataset):
             task_id = f"gpqa_diamond_{row_idx}"
 
-            correct_answer = row["Correct Answer"]
-            incorrect_answers = [
-                row["Incorrect Answer 1"],
-                row["Incorrect Answer 2"],
-                row["Incorrect Answer 3"],
-            ]
+            correct_answer = row[correct_col]
+            incorrect_answers = [row[col] for col in incorrect_cols]
 
-            # Shuffle choices with a deterministic seed based on row index
             shuffled = _shuffle_choices(correct_answer, incorrect_answers, seed=row_idx)
 
             benchmark[task_id] = {
-                "question": row["Question"],
+                "question": row[question_col],
                 "choices": shuffled["choices"],
                 "answer": shuffled["correct_label"],
-                "subdomain": row.get("Subdomain", row.get("subdomain", "Unknown")),
+                "subdomain": row.get(subdomain_col, "Unknown") if subdomain_col else "Unknown",
             }
 
         logger.info(
