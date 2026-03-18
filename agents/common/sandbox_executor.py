@@ -47,7 +47,7 @@ class SandboxManager:
             default_headers={"User-Agent": "PythonHttpClient/1.0"},
         )
         self.sandbox_spec = SandboxSpecConfig(
-            timeout_seconds=60 * 60 * 24,
+            timeout_seconds=60 * 60,
             cpu=4,
             memory_gb=8,
             resource="iagent-test",

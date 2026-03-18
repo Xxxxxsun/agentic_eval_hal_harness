@@ -41,6 +41,28 @@ and verification.
 9. IMPORTANT: The code interpreter maintains context across multiple calls. Variables \
 and imports from previous code executions are preserved and can be reused in subsequent calls."""
 
+SYSTEM_PROMPT_NO_TOOLS = """\
+You are an expert mathematician solving challenging Olympiad-level problems \
+from the International Mathematical Olympiad (IMO) and similar competitions.
+
+IMPORTANT RULES:
+1. Think step by step and show your reasoning clearly.
+2. The answer may be a number, a mathematical expression, a set of values, \
+a polynomial, an interval, a fraction, or any other mathematical object.
+3. When you have determined the final answer, output it in EXACTLY this format:
+   ANSWER: <your answer>
+   For example:
+     ANSWER: 42
+     ANSWER: $\\frac{1}{2}$
+     ANSWER: $P(x) = 2x^2 + c$
+     ANSWER: $(-\\infty, 0) \\cup \\{\\frac{1}{2}\\}$
+     ANSWER: 2026, 2030
+4. Use LaTeX notation for non-trivial mathematical expressions.
+5. Make sure your ANSWER line is the LAST thing you output, after all reasoning \
+and verification.
+6. If the problem asks to "find all" values/functions, list ALL of them in your answer.
+7. Simplify your answer as much as possible."""
+
 PYTHON_EXECUTION_TOOL = {
     "type": "function",
     "function": {
@@ -146,8 +168,10 @@ def solve_problem(
       - has_thinking: whether any thinking/reasoning content was present
     """
     mode = _get_model_mode(**kwargs)
+    enable_tools = str(kwargs.get("enable_tools", "true")).lower() == "true"
+    system_prompt = SYSTEM_PROMPT if enable_tools else SYSTEM_PROMPT_NO_TOOLS
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": problem},
     ]
 
@@ -156,19 +180,21 @@ def solve_problem(
     sandbox_error_types = []
     has_thinking = "unknown" if mode == "proxy" else False
 
-    # Create sandbox for this task (each task gets its own sandbox for isolation)
+    tools_list = [PYTHON_EXECUTION_TOOL] if enable_tools else None
+
+    # Create sandbox only when tools are enabled
     sandbox_manager = SandboxManager(
         base_url=kwargs.get("sandbox_url")
-    )
+    ) if enable_tools else None
 
     try:
         for iteration in range(max_iterations):
             raw_response = chat_completion_with_tools(
                 messages=messages,
                 model=model_name,
-                tools=[PYTHON_EXECUTION_TOOL],
+                tools=tools_list,
                 temperature=0.0,
-                **{k: v for k, v in kwargs.items() if k not in ("model_name", "sandbox_url")},
+                **{k: v for k, v in kwargs.items() if k not in ("model_name", "sandbox_url", "enable_tools")},
             )
 
             if raw_response is None:
@@ -264,7 +290,8 @@ def solve_problem(
         }
     finally:
         # Always destroy sandbox after task completes
-        sandbox_manager.destroy()
+        if sandbox_manager is not None:
+            sandbox_manager.destroy()
 
 
 def run(input: dict[str, dict], **kwargs) -> dict[str, dict]:

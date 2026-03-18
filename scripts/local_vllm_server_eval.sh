@@ -8,6 +8,7 @@ BENCHMARK_NAME=""
 MAX_TASKS=""
 NUM_SAMPLES=""
 MAX_CONCURRENT=""
+ENABLE_TOOLS=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -31,9 +32,13 @@ while [[ $# -gt 0 ]]; do
             MAX_CONCURRENT="$2"
             shift 2
             ;;
+        --enable-tools)
+            ENABLE_TOOLS="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>]"
+            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>] [--enable-tools <true|false>]"
             exit 1
             ;;
     esac
@@ -62,6 +67,9 @@ if [[ -n "${NUM_SAMPLES}" ]]; then
 fi
 if [[ -n "${MAX_CONCURRENT}" ]]; then
     echo "Using MAX_CONCURRENT: ${MAX_CONCURRENT}"
+fi
+if [[ -n "${ENABLE_TOOLS}" ]]; then
+    echo "Using ENABLE_TOOLS: ${ENABLE_TOOLS}"
 fi
 
 # 安装依赖
@@ -167,6 +175,11 @@ if [[ "${RANK}" == "0" ]]; then
     # 如果指定了 max-concurrent，添加该参数
     if [[ -n "${MAX_CONCURRENT}" ]]; then
         HAL_EVAL_CMD="${HAL_EVAL_CMD} --max_concurrent ${MAX_CONCURRENT}"
+    fi
+    
+    # 如果指定了 enable-tools，添加该参数
+    if [[ -n "${ENABLE_TOOLS}" ]]; then
+        HAL_EVAL_CMD="${HAL_EVAL_CMD} -A enable_tools=${ENABLE_TOOLS}"
     fi
     
     # 执行评测

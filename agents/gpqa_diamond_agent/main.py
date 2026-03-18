@@ -30,6 +30,19 @@ IMPORTANT RULES:
 6. Make sure your final answer is the LAST thing you output, after all reasoning and verification.
 7. IMPORTANT: The code interpreter maintains context across multiple calls. Variables and imports from previous code executions are preserved and can be reused in subsequent calls."""
 
+SYSTEM_PROMPT_NO_TOOLS = """You are an expert scientist solving graduate-level multiple-choice questions from the GPQA (Graduate-Level Google-Proof Q&A) benchmark.
+
+These questions span biology, physics, and chemistry, and are designed to be very challenging — even domain experts only achieve ~65% accuracy.
+
+IMPORTANT RULES:
+1. Read the question and ALL four answer choices carefully before reasoning.
+2. Think step by step and show your reasoning.
+3. You must choose exactly ONE answer from A, B, C, or D.
+4. When you have determined the final answer, output it in EXACTLY this format: ANSWER: X
+   where X is one of A, B, C, or D.
+   For example: ANSWER: B
+5. Make sure your final answer is the LAST thing you output, after all reasoning and verification."""
+
 PYTHON_EXECUTION_TOOL = {
     "type": "function",
     "function": {
@@ -150,9 +163,11 @@ def solve_problem(model_name: str, question: str, choices: dict, max_iterations:
       - tool_call_count: total number of tool calls made
     """
     mode = _get_model_mode(**kwargs)
+    enable_tools = str(kwargs.get("enable_tools", "true")).lower() == "true"
+    system_prompt = SYSTEM_PROMPT if enable_tools else SYSTEM_PROMPT_NO_TOOLS
     formatted_prompt = _format_question_prompt(question, choices)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": formatted_prompt},
     ]
 
@@ -160,18 +175,21 @@ def solve_problem(model_name: str, question: str, choices: dict, max_iterations:
     tool_call_count = 0
     sandbox_error_types = []
 
+    tools_list = [PYTHON_EXECUTION_TOOL] if enable_tools else None
+
+    # Create sandbox only when tools are enabled
     sandbox_manager = SandboxManager(
         base_url=kwargs.get("sandbox_url")
-    )
+    ) if enable_tools else None
 
     try:
         for iteration in range(max_iterations):
             raw_response = chat_completion_with_tools(
                 messages=messages,
                 model=model_name,
-                tools=[PYTHON_EXECUTION_TOOL],
+                tools=tools_list,
                 temperature=0.0,
-                **{k: v for k, v in kwargs.items() if k not in ("model_name", "sandbox_url")},
+                **{k: v for k, v in kwargs.items() if k not in ("model_name", "sandbox_url", "enable_tools")},
             )
 
             if raw_response is None:
@@ -253,7 +271,8 @@ def solve_problem(model_name: str, question: str, choices: dict, max_iterations:
             "sandbox_error_types": sandbox_error_types,
         }
     finally:
-        sandbox_manager.destroy()
+        if sandbox_manager is not None:
+            sandbox_manager.destroy()
 
 
 def run(input: dict[str, dict], **kwargs) -> dict[str, dict]:
