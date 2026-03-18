@@ -115,8 +115,8 @@ class SandboxManager:
             result_json = result.to_json()
 
             if result_json.get("success", False):
-                output = result_json.get("outputs", "")
-                output = output.strip() if output else "(No output)"
+                raw_outputs = result_json.get("outputs", "")
+                output = self._extract_text_output(raw_outputs)
                 if len(output) > 10000:
                     output = output[:10000] + "\n... [output truncated]"
                 return {"output": output, "error_type": None}
@@ -130,6 +130,50 @@ class SandboxManager:
                 "output": f"Error executing code: {str(execution_error)}",
                 "error_type": "ExecutionException",
             }
+
+    @staticmethod
+    def _extract_text_output(raw_outputs) -> str:
+        """Extract readable text from sandbox outputs.
+
+        The sandbox returns ``outputs`` as a list of dicts, each with fields
+        like ``outputType``, ``text``, ``data``, etc.  For successful runs the
+        ``text`` field typically holds the printed output.  This method
+        concatenates all available text fragments into a single string.
+
+        If ``raw_outputs`` is already a plain string (legacy format), it is
+        returned as-is after stripping whitespace.
+        """
+        if isinstance(raw_outputs, str):
+            return raw_outputs.strip() if raw_outputs else "(No output)"
+
+        if not isinstance(raw_outputs, list) or not raw_outputs:
+            return "(No output)"
+
+        text_parts = []
+        for entry in raw_outputs:
+            if not isinstance(entry, dict):
+                text_parts.append(str(entry))
+                continue
+            # Prefer 'text' field (printed output)
+            text_value = entry.get("text")
+            if text_value:
+                if isinstance(text_value, list):
+                    text_parts.append("".join(text_value))
+                else:
+                    text_parts.append(str(text_value))
+                continue
+            # Fall back to 'data' field
+            data_value = entry.get("data")
+            if data_value:
+                if isinstance(data_value, dict):
+                    plain = data_value.get("text/plain", "")
+                    if plain:
+                        text_parts.append(str(plain))
+                else:
+                    text_parts.append(str(data_value))
+
+        combined = "\n".join(text_parts).strip()
+        return combined if combined else "(No output)"
 
     @staticmethod
     def _extract_error_type(result_json: dict) -> str | None:
