@@ -142,6 +142,7 @@ def solve_problem(model_name: str, problem: str, max_iterations: int = 15, **kwa
 
     conversation_history = []
     tool_call_count = 0
+    sandbox_error_types = []
     has_thinking = "unknown" if mode == "proxy" else False
 
     # Create sandbox for this task (each task gets its own sandbox for isolation)
@@ -201,6 +202,7 @@ def solve_problem(model_name: str, problem: str, max_iterations: int = 15, **kwa
                     "conversation_history": conversation_history,
                     "tool_call_count": tool_call_count,
                     "has_thinking": has_thinking,
+                    "sandbox_error_types": sandbox_error_types,
                 }
 
             # Process each tool call
@@ -211,20 +213,28 @@ def solve_problem(model_name: str, problem: str, max_iterations: int = 15, **kwa
                     execution_result = sandbox_manager.execute_code(code)
                     tool_call_count += 1
 
+                    result_output = execution_result["output"]
+                    error_type = execution_result.get("error_type")
+                    if error_type:
+                        sandbox_error_types.append(error_type)
+
                     # Record tool execution result
-                    conversation_history.append({
+                    tool_record = {
                         "iteration": iteration,
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "code": code,
-                        "result": execution_result,
-                    })
+                        "result": result_output,
+                    }
+                    if error_type:
+                        tool_record["error_type"] = error_type
+                    conversation_history.append(tool_record)
 
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": execution_result,
+                            "content": result_output,
                         }
                     )
 
@@ -239,6 +249,7 @@ def solve_problem(model_name: str, problem: str, max_iterations: int = 15, **kwa
             "conversation_history": conversation_history,
             "tool_call_count": tool_call_count,
             "has_thinking": has_thinking,
+            "sandbox_error_types": sandbox_error_types,
         }
     finally:
         # Always destroy sandbox after task completes
@@ -274,6 +285,7 @@ def run(input: dict[str, dict], **kwargs) -> dict[str, dict]:
                 "conversation_history": solve_result["conversation_history"],
                 "tool_call_count": solve_result["tool_call_count"],
                 "has_thinking": solve_result["has_thinking"],
+                "sandbox_error_types": solve_result["sandbox_error_types"],
             },
         }
 

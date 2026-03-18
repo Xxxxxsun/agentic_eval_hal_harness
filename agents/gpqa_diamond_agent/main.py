@@ -158,6 +158,7 @@ def solve_problem(model_name: str, question: str, choices: dict, max_iterations:
 
     conversation_history = []
     tool_call_count = 0
+    sandbox_error_types = []
 
     sandbox_manager = SandboxManager(
         base_url=kwargs.get("sandbox_url")
@@ -206,6 +207,7 @@ def solve_problem(model_name: str, question: str, choices: dict, max_iterations:
                     "answer": assistant_message.content or "",
                     "conversation_history": conversation_history,
                     "tool_call_count": tool_call_count,
+                    "sandbox_error_types": sandbox_error_types,
                 }
 
             for tool_call in assistant_message.tool_calls:
@@ -215,19 +217,27 @@ def solve_problem(model_name: str, question: str, choices: dict, max_iterations:
                     execution_result = sandbox_manager.execute_code(code)
                     tool_call_count += 1
 
-                    conversation_history.append({
+                    result_output = execution_result["output"]
+                    error_type = execution_result.get("error_type")
+                    if error_type:
+                        sandbox_error_types.append(error_type)
+
+                    tool_record = {
                         "iteration": iteration,
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "code": code,
-                        "result": execution_result,
-                    })
+                        "result": result_output,
+                    }
+                    if error_type:
+                        tool_record["error_type"] = error_type
+                    conversation_history.append(tool_record)
 
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call.id,
-                            "content": execution_result,
+                            "content": result_output,
                         }
                     )
 
@@ -240,6 +250,7 @@ def solve_problem(model_name: str, question: str, choices: dict, max_iterations:
             "answer": last_content or "",
             "conversation_history": conversation_history,
             "tool_call_count": tool_call_count,
+            "sandbox_error_types": sandbox_error_types,
         }
     finally:
         sandbox_manager.destroy()
@@ -275,6 +286,7 @@ def run(input: dict[str, dict], **kwargs) -> dict[str, dict]:
             "metrics": {
                 "conversation_history": solve_result["conversation_history"],
                 "tool_call_count": solve_result["tool_call_count"],
+                "sandbox_error_types": solve_result["sandbox_error_types"],
             },
         }
 

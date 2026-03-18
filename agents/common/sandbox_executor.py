@@ -78,31 +78,34 @@ class SandboxManager:
         )
 
         # Install dependencies (only once per sandbox)
-        install_ctx = self.sandbox.create_code_context(
-            code_language=CodeLanguage.PYTHON_3_11
-        )
-        install_cmds = """
-%pip install numpy -i https://mirrors.aliyun.com/pypi/simple/
-%pip install scipy -i https://mirrors.aliyun.com/pypi/simple/
-%pip install sympy -i https://mirrors.aliyun.com/pypi/simple/
-"""
-        self.sandbox.run_code_with_context(install_cmds, context=install_ctx)
+#         install_ctx = self.sandbox.create_code_context(
+#             code_language=CodeLanguage.PYTHON_3_11
+#         )
+#         install_cmds = """
+# %pip install numpy -i https://mirrors.aliyun.com/pypi/simple/
+# %pip install scipy -i https://mirrors.aliyun.com/pypi/simple/
+# %pip install sympy -i https://mirrors.aliyun.com/pypi/simple/
+# """
+#         self.sandbox.run_code_with_context(install_cmds, context=install_ctx)
 
         # Create execution context (preserves state across calls)
         self.context = self.sandbox.create_code_context(
-            code_language=CodeLanguage.PYTHON_3_11
+            code_language=CodeLanguage.PYTHON_3_12
         )
         self.initialized = True
 
-    def execute_code(self, code: str) -> str:
-        """Execute Python code in the sandbox and return output.
+    def execute_code(self, code: str) -> dict:
+        """Execute Python code in the sandbox and return structured output.
 
         Args:
             code: Python code to execute.
 
         Returns:
-            The output from code execution, or an error message if execution failed.
-            Error messages start with "Error:" prefix.
+            A dict with:
+              - output (str): The text output or error message.
+              - error_type (str or None): The Python exception class name
+                (e.g. "IndexError") extracted from the sandbox ``ename`` field
+                when execution fails, or None on success.
         """
         if not self.initialized:
             self.initialize()
@@ -114,15 +117,36 @@ class SandboxManager:
             if result_json.get("success", False):
                 output = result_json.get("outputs", "")
                 output = output.strip() if output else "(No output)"
-                # Truncate very long outputs
                 if len(output) > 10000:
                     output = output[:10000] + "\n... [output truncated]"
-                return output
-            else:
-                error_msg = result_json.get("error_message") or "Code execution failed"
-                return f"Error: {error_msg}"
+                return {"output": output, "error_type": None}
+
+            # Extract error type from sandbox outputs
+            error_type = self._extract_error_type(result_json)
+            error_msg = result_json.get("error_message") or "Code execution failed"
+            return {"output": f"Error: {error_msg}", "error_type": error_type}
         except Exception as execution_error:
-            return f"Error executing code: {str(execution_error)}"
+            return {
+                "output": f"Error executing code: {str(execution_error)}",
+                "error_type": "ExecutionException",
+            }
+
+    @staticmethod
+    def _extract_error_type(result_json: dict) -> str | None:
+        """Extract the error type name from sandbox result JSON.
+
+        Looks for the ``ename`` field in the first error output entry.
+        Returns None if no error type can be determined.
+        """
+        outputs = result_json.get("outputs", [])
+        if not isinstance(outputs, list):
+            return None
+        for entry in outputs:
+            if isinstance(entry, dict) and entry.get("outputType") == "error":
+                ename = entry.get("ename")
+                if ename:
+                    return str(ename)
+        return None
 
     def destroy(self):
         """Destroy the sandbox to release resources.

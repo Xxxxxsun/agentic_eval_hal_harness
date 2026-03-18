@@ -290,17 +290,14 @@ class GPQADiamondBenchmark(BaseBenchmark):
                 conversation_history = metrics.get("conversation_history", [])
                 result_entry["conversation_history"] = conversation_history
 
-                successful_tool_calls = 0
-                failed_tool_calls = 0
-                for turn in conversation_history:
-                    if turn.get("role") == "tool" and "result" in turn:
-                        result_text = str(turn.get("result", ""))
-                        if "error" in result_text.lower():
-                            failed_tool_calls += 1
-                        else:
-                            successful_tool_calls += 1
+                # Count failed/successful tool calls based on sandbox_error_types
+                sandbox_error_types = metrics.get("sandbox_error_types", [])
+                failed_tool_calls = len(sandbox_error_types)
+                total_calls = metrics.get("tool_call_count", 0)
+                successful_tool_calls = total_calls - failed_tool_calls
                 result_entry["successful_tool_calls"] = successful_tool_calls
                 result_entry["failed_tool_calls"] = failed_tool_calls
+                result_entry["sandbox_error_types"] = sandbox_error_types
 
             results[task_id] = result_entry
 
@@ -343,12 +340,21 @@ class GPQADiamondBenchmark(BaseBenchmark):
             result.get("failed_tool_calls", 0) for result in eval_results.values()
         )
 
+        # Aggregate sandbox error type counts across all tasks
+        sandbox_error_type_counts: Dict[str, int] = {}
+        for result in eval_results.values():
+            for error_type in result.get("sandbox_error_types", []):
+                sandbox_error_type_counts[error_type] = (
+                    sandbox_error_type_counts.get(error_type, 0) + 1
+                )
+
         return {
             "accuracy": correct_count / total_count if total_count > 0 else 0.0,
             "tasks_with_tool_calls": tasks_with_tools,
             "total_tool_calls": total_tool_calls,
             "successful_tool_calls": total_successful_tool_calls,
             "failed_tool_calls": total_failed_tool_calls,
+            "sandbox_error_type_counts": sandbox_error_type_counts,
             "subdomain_accuracy": subdomain_accuracy,
             "successful_tasks": [
                 task_id
