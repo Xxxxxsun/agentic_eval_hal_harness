@@ -36,6 +36,11 @@ class BenchmarkManager:
             "aime2025",
             "imo_answerbench",
             "gpqa_diamond",
+            "vstar_bench",
+            "hrbench4k",
+            "hrbench8k",
+            "mathvista",
+            "mmstar",
         ]
 
     def get_benchmark(self, benchmark_name: str) -> BaseBenchmark:
@@ -111,6 +116,22 @@ class BenchmarkManager:
             from .benchmarks.gpqa_diamond import GPQADiamondBenchmark
 
             benchmark = GPQADiamondBenchmark(self.agent_dir, self.config)
+        elif benchmark_name == "vstar_bench":
+            from .benchmarks.vstar_bench import VStarBenchBenchmark
+
+            benchmark = VStarBenchBenchmark(self.agent_dir, self.config)
+        elif benchmark_name in {"hrbench4k", "hrbench8k"}:
+            from .benchmarks.hrbench import HRBenchBenchmark
+
+            benchmark = HRBenchBenchmark(self.agent_dir, self.config, benchmark_name)
+        elif benchmark_name == "mathvista":
+            from .benchmarks.mathvista import MathVistaBenchmark
+
+            benchmark = MathVistaBenchmark(self.agent_dir, self.config)
+        elif benchmark_name == "mmstar":
+            from .benchmarks.mmstar import MMStarBenchmark
+
+            benchmark = MMStarBenchmark(self.agent_dir, self.config)
         else:
             raise ValueError(f"Unknown benchmark: {benchmark_name}")
 
