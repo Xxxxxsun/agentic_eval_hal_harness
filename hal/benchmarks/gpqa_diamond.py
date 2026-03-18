@@ -135,7 +135,7 @@ class GPQADiamondBenchmark(BaseBenchmark):
         # Attempt 2: Public community dataset (fingertap/GPQA-Diamond)
         if dataset is None:
             try:
-                dataset = load_dataset("fingertap/GPQA-Diamond", split="train")
+                dataset = load_dataset("fingertap/GPQA-Diamond", split="test")
                 dataset_source = "fingertap/GPQA-Diamond"
             except Exception as second_error:
                 logger.warning(
@@ -146,7 +146,7 @@ class GPQADiamondBenchmark(BaseBenchmark):
         # Attempt 3: Another public dataset (nikhilchandak/GPQA-diamond-free)
         if dataset is None:
             try:
-                dataset = load_dataset("nikhilchandak/GPQA-diamond-free", split="train")
+                dataset = load_dataset("nikhilchandak/GPQA-diamond-free", split="test")
                 dataset_source = "nikhilchandak/GPQA-diamond-free"
             except Exception as third_error:
                 raise RuntimeError(
