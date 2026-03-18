@@ -35,6 +35,7 @@ class BenchmarkManager:
             "colbench_frontend_design",
             "aime2025",
             "imo_answerbench",
+            "gpqa_diamond",
         ]
 
     def get_benchmark(self, benchmark_name: str) -> BaseBenchmark:
@@ -106,6 +107,10 @@ class BenchmarkManager:
             from .benchmarks.imo_answerbench import IMOAnswerBenchBenchmark
 
             benchmark = IMOAnswerBenchBenchmark(self.agent_dir, self.config)
+        elif benchmark_name == "gpqa_diamond":
+            from .benchmarks.gpqa_diamond import GPQADiamondBenchmark
+
+            benchmark = GPQADiamondBenchmark(self.agent_dir, self.config)
         else:
             raise ValueError(f"Unknown benchmark: {benchmark_name}")
 
