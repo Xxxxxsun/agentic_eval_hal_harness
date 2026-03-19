@@ -247,7 +247,7 @@ class BaseBenchmark(ABC):
         per_task_details = {}
 
         # Per-round statistics: {sample_idx: {tool_calls: X, successful: Y, ...}}
-        per_round_stats: Dict[int, Dict[str, int]] = {}
+        per_round_stats: Dict[int, Dict[str, Any]] = {}
 
         for task_id, samples in eval_results.items():
             if not isinstance(samples, list):
@@ -268,6 +268,9 @@ class BaseBenchmark(ABC):
                         failed_count = eval_result.get("failed_tool_calls", 0)
                         has_tool_call = 1 if tool_count > 0 else 0
 
+                        # Extract sandbox error types for this sample
+                        sample_error_types = eval_result.get("sandbox_error_types", [])
+
                         # Aggregate per-round stats
                         if sample_idx not in per_round_stats:
                             per_round_stats[sample_idx] = {
@@ -275,11 +278,17 @@ class BaseBenchmark(ABC):
                                 "successful_tool_calls": 0,
                                 "failed_tool_calls": 0,
                                 "tasks_with_tool_calls": 0,
+                                "sandbox_error_type_counts": {},
                             }
                         per_round_stats[sample_idx]["tool_calls"] += tool_count
                         per_round_stats[sample_idx]["successful_tool_calls"] += successful_count
                         per_round_stats[sample_idx]["failed_tool_calls"] += failed_count
                         per_round_stats[sample_idx]["tasks_with_tool_calls"] += has_tool_call
+
+                        # Accumulate error type counts for this round
+                        for error_type in sample_error_types:
+                            round_error_counts = per_round_stats[sample_idx]["sandbox_error_type_counts"]
+                            round_error_counts[error_type] = round_error_counts.get(error_type, 0) + 1
                     else:
                         correct = bool(eval_result)
                     correct_flags.append(1 if correct else 0)
@@ -328,6 +337,17 @@ class BaseBenchmark(ABC):
             avg_failed_tool_calls_per_round = 0.0
             avg_tasks_with_tool_calls_per_round = 0.0
 
+        # Aggregate sandbox error type counts across all rounds (overall)
+        overall_sandbox_error_type_counts: Dict[str, int] = {}
+        per_round_sandbox_error_type_counts: Dict[int, Dict[str, int]] = {}
+        for round_idx, round_stats in per_round_stats.items():
+            round_error_counts = round_stats.get("sandbox_error_type_counts", {})
+            per_round_sandbox_error_type_counts[round_idx] = round_error_counts
+            for error_type, count in round_error_counts.items():
+                overall_sandbox_error_type_counts[error_type] = (
+                    overall_sandbox_error_type_counts.get(error_type, 0) + count
+                )
+
         return {
             f"avg@{num_samples}": overall_avg,
             f"pass@{num_samples}": overall_pass,
@@ -337,6 +357,8 @@ class BaseBenchmark(ABC):
             "avg_successful_tool_calls_per_round": avg_successful_tool_calls_per_round,
             "avg_failed_tool_calls_per_round": avg_failed_tool_calls_per_round,
             "avg_tasks_with_tool_calls_per_round": avg_tasks_with_tool_calls_per_round,
+            "sandbox_error_type_counts": overall_sandbox_error_type_counts,
+            "per_round_sandbox_error_type_counts": per_round_sandbox_error_type_counts,
             "per_task_details": per_task_details,
         }
 
