@@ -490,6 +490,7 @@ def attach_agent_metrics(result_entry: Dict[str, Any], raw_task_data: Any) -> No
     result_entry["tool_call_count"] = metrics.get("tool_call_count", 0)
     conversation_history = metrics.get("conversation_history", [])
     result_entry["conversation_history"] = conversation_history
+    result_entry["sandbox_error_types"] = metrics.get("sandbox_error_types", [])
 
     successful_tool_calls = 0
     failed_tool_calls = 0

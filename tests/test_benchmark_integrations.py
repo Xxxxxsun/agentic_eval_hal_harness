@@ -91,6 +91,38 @@ from hal.benchmarks._benchmark_utils import (
     extract_inline_choices_from_text,
 )
 from hal.benchmarks.vstar_bench import VStarBenchBenchmark, parse_vstar_row
+from agents.common.vqa_runtime import run_vqa_agent
+
+
+class _FakeToolFunction:
+    def __init__(self, name: str, arguments: str):
+        self.name = name
+        self.arguments = arguments
+
+
+class _FakeToolCall:
+    def __init__(self, call_id: str, name: str, arguments: str):
+        self.id = call_id
+        self.function = _FakeToolFunction(name, arguments)
+
+
+class _FakeMessage:
+    def __init__(self, content=None, tool_calls=None, reasoning_content=None):
+        self.content = content
+        self.tool_calls = tool_calls
+        self.reasoning_content = reasoning_content
+        self.reasoning = None
+
+
+class _FakeChoice:
+    def __init__(self, finish_reason: str, message: _FakeMessage):
+        self.finish_reason = finish_reason
+        self.message = message
+
+
+class _FakeResponse:
+    def __init__(self, finish_reason: str, message: _FakeMessage):
+        self.choices = [_FakeChoice(finish_reason, message)]
 
 
 class BenchmarkIntegrationTests(unittest.TestCase):
@@ -442,6 +474,179 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             "run",
         )
         self.assertIn("Missing required MMStar answer channels", missing_channel["mm_1"]["error"])
+
+    def test_vqa_agent_without_tools_matches_plain_behavior(self) -> None:
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            return_value=_FakeResponse("stop", _FakeMessage(content="B")),
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_1": {
+                        "question": "Which option is correct?",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=False,
+                max_tokens=64,
+            )
+
+        self.assertEqual(result["task_1"], "B")
+
+    def test_vqa_agent_with_tools_executes_python_and_preserves_context(self) -> None:
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall("call_1", "execute_python", '{"code": "x = 6"}')
+                    ],
+                ),
+            ),
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "call_2", "execute_python", '{"code": "print(x * 7)"}'
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="Final answer: 42")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {"task_2": {"question": "Compute the value."}},
+                model_name="test-model",
+                benchmark_name="mathvista",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        self.assertEqual(result["task_2"]["answer"], "Final answer: 42")
+        self.assertEqual(result["task_2"]["metrics"]["tool_call_count"], 2)
+        tool_turns = [
+            turn
+            for turn in result["task_2"]["metrics"]["conversation_history"]
+            if turn.get("role") == "tool"
+        ]
+        self.assertEqual(tool_turns[-1]["result"], "42")
+        self.assertEqual(result["task_2"]["metrics"]["sandbox_error_types"], [])
+
+    def test_vqa_agent_with_tools_records_sandbox_error_types(self) -> None:
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "call_err",
+                            "execute_python",
+                            '{"code": "raise ValueError(\\"boom\\")"}',
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="Final answer: fallback")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {"task_3": {"question": "Use python and recover."}},
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        self.assertEqual(
+            result["task_3"]["metrics"]["sandbox_error_types"],
+            ["ValueError"],
+        )
+
+    def test_mmstar_with_tools_preserves_three_channel_contract(self) -> None:
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "vision_call",
+                            "execute_python",
+                            '{"code": "print(1 + 1)"}',
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="A")),
+            _FakeResponse("stop", _FakeMessage(content="B")),
+            _FakeResponse("stop", _FakeMessage(content="C")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_4": {
+                        "question": "Which option matches?",
+                        "choices": {"A": "Cat", "B": "Dog", "C": "Bird", "D": "Fish"},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="mmstar",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        self.assertEqual(result["task_4"]["vision_answer"], "A")
+        self.assertEqual(result["task_4"]["no_image_answer"], "B")
+        self.assertEqual(result["task_4"]["base_llm_answer"], "B")
+        self.assertEqual(result["task_4"]["metrics"]["tool_call_count"], 1)
+
+    def test_attach_agent_metrics_includes_sandbox_error_types(self) -> None:
+        with patch.object(
+            VStarBenchBenchmark,
+            "_load_dataset_rows",
+            return_value=[
+                {"id": "1", "question": "Q", "answer": "A", "image": self.image_path}
+            ],
+        ):
+            benchmark = VStarBenchBenchmark("agents", {})
+
+        eval_results = benchmark.evaluate_output(
+            {
+                "1": {
+                    "answer": "A",
+                    "metrics": {
+                        "tool_call_count": 1,
+                        "conversation_history": [],
+                        "sandbox_error_types": ["ValueError"],
+                    },
+                }
+            },
+            "run",
+        )
+
+        self.assertEqual(eval_results["1"]["sandbox_error_types"], ["ValueError"])
 
     def test_benchmark_manager_registration(self) -> None:
         manager = BenchmarkManager(agent_dir="agents", config={})
