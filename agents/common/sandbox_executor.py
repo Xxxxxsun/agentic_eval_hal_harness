@@ -50,10 +50,12 @@ class SandboxManager:
             timeout_seconds=60 * 60,
             cpu=4,
             memory_gb=8,
-            resource="iagent-test",
+            resource="iagent-offline",
+            # resource="iagent-test",
             envs={},
             init_commands=[],
-            template="iagent-sandbox-server",
+            template="docker-docker-swe",
+            # template="iagent-sandbox-server",
             allow_domains=[],
         )
         self.sandbox = None
