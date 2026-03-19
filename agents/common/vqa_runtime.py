@@ -12,7 +12,122 @@ from openai import OpenAI
 try:  # pragma: no cover - import path depends on how the agent is launched
     from model_client import _get_model_mode, chat_completion_with_tools, create_openai_client
 except ImportError:  # pragma: no cover - exercised in unit tests
-    from agents.model_client import _get_model_mode, chat_completion_with_tools, create_openai_client
+    try:
+        from agents.model_client import _get_model_mode, chat_completion_with_tools, create_openai_client
+    except ImportError:  # pragma: no cover - exercised in local runner temp dirs
+        import requests
+
+        DEFAULT_PROXY_URL = "https://llm-chat-api.alibaba-inc.com/v1/api/chat"
+        DEFAULT_PROXY_TOKEN = (
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+            ".eyJ1c2VyIjoibW9kZWxfdHJhaW5fdmxtIn0"
+            ".XYFz9JOEJ-f1xXPPqs9yi5cnEG4sjrR6cZayWz_NDqM"
+        )
+        DEFAULT_QUOTA_ID = "dd95187c-29dd-464d-9b96-8f62e6ab8eb5"
+        DEFAULT_ACCESS_KEY = "9101ac974ab20f60f668dcf099bc6a10"
+        DEFAULT_USER_ID = "506759"
+        DEFAULT_TAG = "大模型团队_VLM_自动化评测"
+        DEFAULT_APP = "model_train_vlm"
+
+        def _get_model_mode(**kwargs):
+            return kwargs.get("model_mode", os.getenv("MODEL_MODE", "local"))
+
+        def _resolve_local_client(model_name: str, **kwargs):
+            resolved_model = model_name
+
+            if "gemini" in model_name:
+                resolved_model = model_name.replace("gemini/", "openai/")
+                api_key = os.getenv("GEMINI_API_KEY")
+                base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+                return OpenAI(api_key=api_key, base_url=base_url), resolved_model
+
+            if "anthropic" in model_name:
+                resolved_model = model_name.replace("anthropic/", "openai/")
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                base_url = "https://api.anthropic.com/v1"
+                return OpenAI(api_key=api_key, base_url=base_url), resolved_model
+
+            if "together_ai" in model_name:
+                resolved_model = model_name.replace("together_ai/", "openai/")
+                api_key = os.environ.get("TOGETHERAI_API_KEY")
+                base_url = "https://api.together.xyz/v1"
+                return OpenAI(api_key=api_key, base_url=base_url), resolved_model
+
+            return OpenAI(), resolved_model
+
+        def create_openai_client(model_name: str = "", **kwargs):
+            mode = _get_model_mode(**kwargs)
+            if mode == "proxy":
+                proxy_base_url = kwargs.get(
+                    "proxy_openai_base_url",
+                    os.getenv("PROXY_OPENAI_BASE_URL", ""),
+                )
+                proxy_api_key = kwargs.get(
+                    "proxy_openai_api_key",
+                    os.getenv("PROXY_OPENAI_API_KEY", ""),
+                )
+                if proxy_base_url and proxy_api_key:
+                    return OpenAI(base_url=proxy_base_url, api_key=proxy_api_key), model_name
+            return _resolve_local_client(model_name, **kwargs)
+
+        def _build_proxy_request(messages, model, tools=None, **kwargs):
+            proxy_url = kwargs.get("proxy_url", os.getenv("PROXY_URL", DEFAULT_PROXY_URL))
+            proxy_token = kwargs.get("proxy_token", os.getenv("PROXY_TOKEN", DEFAULT_PROXY_TOKEN))
+            quota_id = kwargs.get("quota_id", os.getenv("QUOTA_ID", DEFAULT_QUOTA_ID))
+            access_key = kwargs.get("access_key", os.getenv("ACCESS_KEY", DEFAULT_ACCESS_KEY))
+            user_id = kwargs.get("user_id", os.getenv("PROXY_USER_ID", DEFAULT_USER_ID))
+            tag = kwargs.get("proxy_tag", DEFAULT_TAG)
+            app = kwargs.get("proxy_app", DEFAULT_APP)
+
+            params = {
+                "max_new_tokens": int(kwargs.get("max_tokens", 1024)),
+                "temperature": float(kwargs.get("temperature", 1.0)),
+            }
+            if tools:
+                params["tools"] = tools
+
+            headers = {
+                "Content-Type": "application/json",
+                "token": proxy_token,
+            }
+            payload = json.dumps(
+                {
+                    "model": model,
+                    "prompt": messages,
+                    "tag": tag,
+                    "quota_id": quota_id,
+                    "app": app,
+                    "params": params,
+                    "user_id": user_id,
+                    "access_key": access_key,
+                }
+            )
+            return proxy_url, headers, payload
+
+        def chat_completion_with_tools(messages, model, tools=None, **kwargs):
+            mode = _get_model_mode(**kwargs)
+            if mode == "proxy":
+                proxy_url, headers, payload = _build_proxy_request(
+                    messages, model, tools=tools, **kwargs
+                )
+                response = requests.request("POST", proxy_url, headers=headers, data=payload)
+                response_dict = json.loads(response.text)
+                return response_dict.get("data")
+
+            client, resolved_model = create_openai_client(model, **kwargs)
+            extra_params = {}
+            if tools:
+                extra_params["tools"] = tools
+            if "max_tokens" in kwargs:
+                extra_params["max_tokens"] = int(kwargs["max_tokens"])
+            if "reasoning_effort" in kwargs:
+                extra_params["reasoning_effort"] = kwargs["reasoning_effort"]
+            return client.chat.completions.create(
+                model=resolved_model,
+                messages=messages,
+                temperature=float(kwargs.get("temperature", 1.0)),
+                **extra_params,
+            )
 
 try:  # pragma: no cover - import path depends on how the agent is launched
     from common.sandbox_executor import LocalPythonExecutor, SandboxManager
