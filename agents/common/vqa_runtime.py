@@ -1,6 +1,7 @@
 import base64
 import mimetypes
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -71,6 +72,51 @@ def _extract_choices(task_data: Dict[str, Any]) -> Dict[str, str]:
             if idx < 26 and _normalize_text(choice)
         }
     return {}
+
+
+def _extract_choice_letter(response: str, valid_labels: List[str]) -> str:
+    if not response or not valid_labels:
+        return ""
+
+    label_set = {label.upper() for label in valid_labels}
+    upper_response = response.upper()
+
+    patterns = [
+        r"ANSWER\s*:\s*\(?([A-Z])\)?\b",
+        r"FINAL\s+ANSWER\s*[:\-]?\s*\(?([A-Z])\)?\b",
+        r"(?:THE\s+)?ANSWER\s+IS\s+\(?([A-Z])\)?\b",
+        r"OPTION\s+\(?([A-Z])\)?\b",
+        r"CHOICE\s+\(?([A-Z])\)?\b",
+        r"\(([A-Z])\)",
+    ]
+    for pattern in patterns:
+        matches = re.findall(pattern, upper_response, flags=re.IGNORECASE)
+        for match in reversed(matches):
+            if match in label_set:
+                return match
+
+    for match in reversed(re.findall(r"\b([A-Z])\b", upper_response)):
+        if match in label_set:
+            return match
+
+    return ""
+
+
+def _postprocess_response(task_data: Dict[str, Any], response: str) -> str:
+    choices = _extract_choices(task_data)
+    if not choices:
+        return response
+
+    choice_letter = _extract_choice_letter(response, list(choices.keys()))
+    if choice_letter:
+        return choice_letter
+
+    normalized_response = _normalize_text(response).casefold()
+    for label, choice_text in choices.items():
+        if normalized_response == _normalize_text(choice_text).casefold():
+            return label
+
+    return response
 
 
 def _collect_image_references(task_data: Dict[str, Any]) -> List[str]:
@@ -149,7 +195,8 @@ def _build_task_prompt(task_data: Dict[str, Any], include_image: bool) -> str:
         choice_lines = [f"{label}. {text}" for label, text in choices.items()]
         prompt_parts.append("Choices:\n" + "\n".join(choice_lines))
         prompt_parts.append(
-            "Respond with only the single best choice letter (for example: A)."
+            "Respond with exactly one uppercase choice letter from the provided choices (for example: A). "
+            "Do not include any other words, punctuation, or explanation."
         )
     else:
         prompt_parts.append(
@@ -215,6 +262,7 @@ def _chat_once(
 
     response = client.chat.completions.create(**completion_kwargs)
     text = _normalize_text(response.choices[0].message.content or "")
+    text = _postprocess_response(task_data, text)
     _debug_log(
         debug_enabled,
         task_id,
