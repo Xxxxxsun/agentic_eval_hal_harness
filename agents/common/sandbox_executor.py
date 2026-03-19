@@ -54,7 +54,7 @@ class SandboxManager:
             # resource="iagent-test",
             envs={},
             init_commands=[],
-            template="docker-docker-swe",
+            template="docker-in-docker-swe",
             # template="iagent-sandbox-server",
             allow_domains=[],
         )
