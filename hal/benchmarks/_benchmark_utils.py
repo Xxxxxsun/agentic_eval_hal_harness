@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import os
 import re
@@ -345,10 +347,14 @@ def _resolve_local_asset_path(asset_path: str) -> Optional[str]:
 
     for root in _candidate_local_asset_roots():
         direct_match = root / target
-        if direct_match.exists():
-            resolved = str(direct_match.resolve())
-            _LOCAL_ASSET_PATH_CACHE[cache_key] = resolved
-            return resolved
+        try:
+            if direct_match.exists():
+                resolved = str(direct_match.resolve())
+                _LOCAL_ASSET_PATH_CACHE[cache_key] = resolved
+                return resolved
+        except OSError:
+            _LOCAL_ASSET_PATH_CACHE[cache_key] = None
+            return None
 
         try:
             for candidate in root.rglob(basename):
@@ -364,6 +370,26 @@ def _resolve_local_asset_path(asset_path: str) -> Optional[str]:
     return None
 
 
+def _decode_inline_image_string(asset: str) -> Optional[bytes]:
+    candidate = asset.strip()
+    if not candidate:
+        return None
+
+    if candidate.startswith("data:image/") and "," in candidate:
+        candidate = candidate.split(",", 1)[1]
+
+    compact = "".join(candidate.split())
+    if len(compact) < 128:
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9+/=]+", compact):
+        return None
+
+    try:
+        return base64.b64decode(compact, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+
+
 def _materialize_asset(asset: Any, benchmark_name: str, file_stub: str) -> Optional[str]:
     asset_dir = os.path.join(ASSET_CACHE_DIR, benchmark_name)
     os.makedirs(asset_dir, exist_ok=True)
@@ -371,6 +397,12 @@ def _materialize_asset(asset: Any, benchmark_name: str, file_stub: str) -> Optio
     if isinstance(asset, str):
         if asset.startswith(("http://", "https://")):
             return asset
+        inline_image_bytes = _decode_inline_image_string(asset)
+        if inline_image_bytes is not None:
+            output_path = os.path.join(asset_dir, file_stub)
+            with open(output_path, "wb") as handle:
+                handle.write(inline_image_bytes)
+            return output_path
         if os.path.exists(asset):
             return os.path.abspath(asset)
         resolved_local_path = _resolve_local_asset_path(asset)
