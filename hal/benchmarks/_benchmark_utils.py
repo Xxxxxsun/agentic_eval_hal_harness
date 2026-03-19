@@ -21,6 +21,10 @@ BENCHMARK_DATASET_REPOS = {
 _LOCAL_ASSET_PATH_CACHE: Dict[str, Optional[str]] = {}
 
 
+def _dataset_asset_base_url() -> str:
+    return os.getenv("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+
+
 def pick_first(mapping: Dict[str, Any], keys: Iterable[str], default: Any = None) -> Any:
     for key in keys:
         if key in mapping and mapping[key] not in (None, ""):
@@ -332,7 +336,10 @@ def _materialize_asset(asset: Any, benchmark_name: str, file_stub: str) -> Optio
         dataset_repo = BENCHMARK_DATASET_REPOS.get(benchmark_name)
         asset_extension = os.path.splitext(asset)[1].lower()
         if dataset_repo and asset_extension in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
-            return f"https://huggingface.co/datasets/{dataset_repo}/resolve/main/{quote(asset.lstrip('/'))}"
+            return (
+                f"{_dataset_asset_base_url()}/datasets/{dataset_repo}/resolve/main/"
+                f"{quote(asset.lstrip('/'))}"
+            )
         return None
 
     if isinstance(asset, dict):
