@@ -1,5 +1,0 @@
-openai
-os
-typing
-pathlib
-weave
