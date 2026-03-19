@@ -1,102 +1,151 @@
 import base64
+import json
 import mimetypes
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from openai import OpenAI
 
+try:  # pragma: no cover - import path depends on how the agent is launched
+    from model_client import _get_model_mode, chat_completion_with_tools, create_openai_client
+except ImportError:  # pragma: no cover - exercised in unit tests
+    from agents.model_client import _get_model_mode, chat_completion_with_tools, create_openai_client
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+try:  # pragma: no cover - import path depends on how the agent is launched
+    from common.sandbox_executor import LocalPythonExecutor, SandboxManager
+except ImportError:  # pragma: no cover - exercised in unit tests
+    from agents.common.sandbox_executor import LocalPythonExecutor, SandboxManager
+
+
+SYSTEM_PROMPT = (
+    "You are solving multimodal benchmark questions. "
+    "Use the execute_python tool when calculations, counting, geometry, "
+    "unit conversion, or numerical verification would help. "
+    "Keep the final answer concise and follow the user prompt's answer format."
+)
+
+PYTHON_EXECUTION_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "execute_python",
+        "description": (
+            "Execute Python code in a persistent interpreter. "
+            "Use this to verify calculations, count objects, manipulate numbers, "
+            "solve equations, or check candidate answers."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "The Python code to execute. Print any values you want to inspect.",
+                }
+            },
+            "required": ["code"],
+        },
+    },
+}
 
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _is_debug_enabled(kwargs: Dict[str, Any]) -> bool:
-    raw_value = kwargs.get("debug")
-    if raw_value is None:
-        raw_value = os.getenv("VQA_AGENT_DEBUG", "")
-    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+    return _as_bool(kwargs.get("debug"), default=False)
 
 
-def _debug_log(enabled: bool, task_id: str, message: str) -> None:
-    if not enabled:
+def _debug_log(task_id: str, message: str, debug: bool) -> None:
+    if not debug:
         return
-    timestamp = datetime.now().isoformat(timespec="seconds")
+    timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     print(f"[vqa_agent][{timestamp}][task={task_id}] {message}", flush=True)
 
 
-def _summarize_task_media(task_data: Dict[str, Any]) -> str:
-    summary = {
-        "image_path": task_data.get("image_path"),
-        "file_name": task_data.get("file_name"),
-        "image_url": task_data.get("image_url"),
-        "image_paths_len": len(task_data.get("image_paths") or []),
-        "image_urls_len": len(task_data.get("image_urls") or []),
-        "files_len": len(task_data.get("files") or {}),
-        "choices_len": len(_extract_choices(task_data)),
-    }
-    return str(summary)
-
-
 def _extract_question(task_data: Dict[str, Any]) -> str:
-    for key in ("question", "problem", "prompt", "query", "instruction", "text"):
-        value = _normalize_text(task_data.get(key))
-        if value:
-            return value
+    for key in ("question", "problem", "prompt", "query", "text", "instruction"):
+        value = task_data.get(key)
+        if _normalize_text(value):
+            return _normalize_text(value)
 
-    metadata = task_data.get("metadata") or {}
+    metadata = task_data.get("metadata")
     if isinstance(metadata, dict):
-        for key in ("question", "problem", "prompt", "query", "instruction", "text"):
-            value = _normalize_text(metadata.get(key))
-            if value:
-                return value
+        for key in ("question", "problem", "prompt", "query", "text", "instruction"):
+            value = metadata.get(key)
+            if _normalize_text(value):
+                return _normalize_text(value)
+
     return ""
 
 
 def _extract_choices(task_data: Dict[str, Any]) -> Dict[str, str]:
-    raw_choices = task_data.get("choices") or {}
-    if isinstance(raw_choices, dict):
-        return {
-            str(label).strip().upper(): _normalize_text(choice)
-            for label, choice in raw_choices.items()
-            if _normalize_text(choice)
-        }
-    if isinstance(raw_choices, (list, tuple)):
-        return {
-            chr(ord("A") + idx): _normalize_text(choice)
-            for idx, choice in enumerate(raw_choices)
-            if idx < 26 and _normalize_text(choice)
-        }
-    return {}
+    raw_choices = task_data.get("choices")
+    if not isinstance(raw_choices, dict):
+        return {}
+    return {
+        str(label).strip().upper(): _normalize_text(text)
+        for label, text in raw_choices.items()
+        if _normalize_text(text)
+    }
+
+
+def _question_embeds_choices(question: str, choices: Dict[str, str]) -> bool:
+    if len(choices) < 2:
+        return False
+
+    embedded_markers = 0
+    for label in choices:
+        if f"({label})" in question or f"\n{label}." in question or f"\n{label})" in question:
+            embedded_markers += 1
+    return embedded_markers >= 2
 
 
 def _collect_image_references(task_data: Dict[str, Any]) -> List[str]:
-    image_refs: List[str] = []
+    refs: List[str] = []
+    files = task_data.get("files") if isinstance(task_data.get("files"), dict) else {}
 
-    def _append_if_present(value: Any) -> None:
-        if isinstance(value, str) and value and value not in image_refs:
-            image_refs.append(value)
+    def add_ref(candidate: Any) -> None:
+        if not candidate:
+            return
+        if not isinstance(candidate, str):
+            return
+        if candidate in refs:
+            return
+        if candidate.startswith(("http://", "https://")):
+            refs.append(candidate)
+            return
+        if os.path.exists(candidate):
+            refs.append(os.path.abspath(candidate))
+            return
+        if candidate in files and os.path.exists(files[candidate]):
+            refs.append(os.path.abspath(files[candidate]))
+            return
 
-    _append_if_present(task_data.get("image_path"))
-    _append_if_present(task_data.get("file_name"))
-    _append_if_present(task_data.get("image_url"))
+    for key in ("image_path", "file_name", "image_url"):
+        add_ref(task_data.get(key))
 
     for key in ("image_paths", "image_urls"):
-        values = task_data.get(key) or []
+        values = task_data.get(key)
         if isinstance(values, (list, tuple)):
             for value in values:
-                _append_if_present(value)
+                add_ref(value)
 
-    files = task_data.get("files") or {}
-    if isinstance(files, dict):
-        for relative_path in files.keys():
-            if os.path.splitext(str(relative_path))[1].lower() in IMAGE_EXTENSIONS:
-                _append_if_present(str(relative_path))
+    if not refs and files:
+        for abs_path in files.values():
+            add_ref(abs_path)
 
-    return image_refs
+    return refs
 
 
 def _guess_mime_type(path: str) -> str:
@@ -104,268 +153,503 @@ def _guess_mime_type(path: str) -> str:
     return mime_type or "image/png"
 
 
-def _image_ref_to_content_part(image_ref: str) -> Optional[Dict[str, Any]]:
-    if image_ref.startswith(("http://", "https://", "data:")):
+def _image_ref_to_content_part(image_ref: str) -> Dict[str, Any]:
+    if image_ref.startswith(("http://", "https://")):
         return {"type": "image_url", "image_url": {"url": image_ref}}
 
-    if not os.path.exists(image_ref):
-        return None
-
-    with open(image_ref, "rb") as image_file:
-        encoded = base64.b64encode(image_file.read()).decode("utf-8")
-
+    image_path = Path(image_ref)
+    mime_type = _guess_mime_type(str(image_path))
+    with open(image_path, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode("ascii")
     return {
         "type": "image_url",
-        "image_url": {"url": f"data:{_guess_mime_type(image_ref)};base64,{encoded}"},
+        "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
     }
 
 
-def _build_task_prompt(task_data: Dict[str, Any], include_image: bool) -> str:
-    benchmark_name = str(task_data.get("benchmark_name", ""))
-    question = _extract_question(task_data)
-    choices = _extract_choices(task_data)
-
-    prompt_parts = []
-    if benchmark_name == "mmstar":
-        prompt_parts.append(
-            "You are answering a multimodal benchmark question. "
-            "Return only the final answer with no explanation."
-        )
-    else:
-        prompt_parts.append(
-            "Answer the following benchmark question as accurately as possible. "
-            "Return only the final answer with no explanation."
-        )
-
-    if include_image:
-        prompt_parts.append("Use the provided image(s) when relevant.")
-    else:
-        prompt_parts.append("Do not assume access to any image.")
-
-    if question:
-        prompt_parts.append(f"Question: {question}")
-
-    if choices:
-        choice_lines = [f"{label}. {text}" for label, text in choices.items()]
-        prompt_parts.append("Choices:\n" + "\n".join(choice_lines))
-        prompt_parts.append(
-            "Respond with only the single best choice letter (for example: A)."
-        )
-    else:
-        prompt_parts.append(
-            "Respond with only the final short answer. Do not include reasoning."
-        )
-
-    return "\n\n".join(prompt_parts)
-
-
-def _build_user_content(task_data: Dict[str, Any], include_image: bool) -> List[Dict[str, Any]]:
-    content: List[Dict[str, Any]] = [
-        {"type": "text", "text": _build_task_prompt(task_data, include_image=include_image)}
+def _build_task_prompt(question: str, choices: Dict[str, str], include_image: bool) -> str:
+    lines = [
+        "Answer the following benchmark question as accurately as possible.",
+        "Return only the final answer with no explanation.",
     ]
     if include_image:
-        for image_ref in _collect_image_references(task_data):
-            image_part = _image_ref_to_content_part(image_ref)
-            if image_part is not None:
-                content.append(image_part)
-    return content
+        lines.append("Use the provided image(s) when relevant.")
+
+    lines.extend(["", f"Question: {question}"])
+
+    if choices and not _question_embeds_choices(question, choices):
+        lines.extend(["", "Choices:"])
+        for label, choice_text in choices.items():
+            lines.append(f"({label}) {choice_text}")
+
+    lines.extend(["", "Respond with only the final short answer. Do not include reasoning."])
+    return "\n".join(lines)
 
 
-def _create_client(
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-    timeout: Optional[float] = None,
-) -> OpenAI:
-    return OpenAI(
-        base_url=base_url or os.getenv("OPENAI_BASE_URL"),
-        api_key=api_key or os.getenv("OPENAI_API_KEY", "EMPTY"),
-        timeout=timeout,
-    )
-
-
-def _chat_once(
-    client: OpenAI,
-    model_name: str,
+def _build_user_content(
     task_data: Dict[str, Any],
     include_image: bool,
-    temperature: float,
-    max_tokens: Optional[int],
-    task_id: str,
-    debug_enabled: bool,
-) -> str:
+) -> Tuple[List[Dict[str, Any]], str, Dict[str, str], List[str]]:
+    question = _extract_question(task_data)
+    choices = _extract_choices(task_data)
     image_refs = _collect_image_references(task_data) if include_image else []
+    prompt = _build_task_prompt(question, choices, include_image=include_image)
+
+    content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for image_ref in image_refs:
+        content.append(_image_ref_to_content_part(image_ref))
+    return content, question, choices, image_refs
+
+
+def _summarize_task_media(task_data: Dict[str, Any]) -> Dict[str, Any]:
+    files = task_data.get("files") if isinstance(task_data.get("files"), dict) else {}
+    choices = _extract_choices(task_data)
+    return {
+        "image_path": task_data.get("image_path"),
+        "file_name": task_data.get("file_name"),
+        "image_url": task_data.get("image_url"),
+        "image_paths_len": len(task_data.get("image_paths") or []),
+        "image_urls_len": len(task_data.get("image_urls") or []),
+        "files_len": len(files),
+        "choices_len": len(choices),
+    }
+
+
+def _normalize_model_response(raw_response: Any, mode: str, iteration: int) -> Tuple[str, Any, Optional[str]]:
+    if mode == "local" or hasattr(raw_response, "choices"):
+        choice = raw_response.choices[0]
+        assistant_message = choice.message
+        finish_reason = choice.finish_reason or ("tool_calls" if getattr(assistant_message, "tool_calls", None) else "stop")
+        thinking_content = (
+            getattr(assistant_message, "reasoning_content", None)
+            or getattr(assistant_message, "reasoning", None)
+        )
+        return finish_reason, assistant_message, thinking_content
+
+    if not isinstance(raw_response, dict):
+        return "stop", SimpleNamespace(content="", tool_calls=None, role="assistant"), None
+
+    message = raw_response.get("message", "")
+    if isinstance(message, dict) and message.get("is_function_call"):
+        tool_calls = [
+            SimpleNamespace(
+                id=f"proxy_call_{iteration}",
+                function=SimpleNamespace(
+                    name=message.get("function_call_name", ""),
+                    arguments=message.get("function_call_args", "{}"),
+                ),
+            )
+        ]
+        assistant_message = SimpleNamespace(content=None, tool_calls=tool_calls, role="assistant")
+        return "tool_calls", assistant_message, None
+
+    content = message if isinstance(message, str) else str(message)
+    assistant_message = SimpleNamespace(content=content, tool_calls=None, role="assistant")
+    return "stop", assistant_message, None
+
+
+def _assistant_message_to_dict(assistant_message: Any) -> Dict[str, Any]:
+    if isinstance(assistant_message, dict):
+        return assistant_message
+
+    message = {"role": "assistant", "content": assistant_message.content or ""}
+    tool_calls = getattr(assistant_message, "tool_calls", None)
+    if tool_calls:
+        message["tool_calls"] = []
+        for tool_call in tool_calls:
+            message["tool_calls"].append(
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                }
+            )
+    return message
+
+
+def _invoke_completion(
+    *,
+    messages: List[Dict[str, Any]],
+    model_name: str,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    api_base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    **kwargs: Any,
+) -> Any:
+    mode = _get_model_mode(**kwargs)
+    temperature = float(kwargs.get("temperature", 0.0))
+    extra_params: Dict[str, Any] = {}
+    if "max_tokens" in kwargs:
+        extra_params["max_tokens"] = int(kwargs["max_tokens"])
+    if "reasoning_effort" in kwargs:
+        extra_params["reasoning_effort"] = kwargs["reasoning_effort"]
+
+    if api_base_url or api_key:
+        client = OpenAI(
+            base_url=api_base_url or os.getenv("OPENAI_BASE_URL"),
+            api_key=api_key or os.getenv("OPENAI_API_KEY", "empty"),
+        )
+        return client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=temperature,
+            tools=tools,
+            **extra_params,
+        )
+
+    if mode == "proxy":
+        return chat_completion_with_tools(
+            messages=messages,
+            model=model_name,
+            tools=tools,
+            temperature=temperature,
+            **extra_params,
+            **{k: v for k, v in kwargs.items() if k not in {"temperature", "max_tokens", "reasoning_effort"}},
+        )
+
+    client, resolved_model = create_openai_client(model_name, **kwargs)
+    return client.chat.completions.create(
+        model=resolved_model,
+        messages=messages,
+        temperature=temperature,
+        tools=tools,
+        **extra_params,
+    )
+
+
+def _create_code_executor(code_executor: str, sandbox_url: Optional[str]) -> Any:
+    if code_executor == "sandbox":
+        return SandboxManager(base_url=sandbox_url)
+    return LocalPythonExecutor()
+
+
+def _solve_single_channel(
+    *,
+    task_id: str,
+    task_data: Dict[str, Any],
+    benchmark_name: str,
+    model_name: str,
+    include_image: bool,
+    debug: bool,
+    enable_tools: bool,
+    code_executor: str,
+    sandbox_url: Optional[str],
+    api_base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    **kwargs: Any,
+) -> Tuple[str, Dict[str, Any]]:
+    user_content, question, _, image_refs = _build_user_content(task_data, include_image=include_image)
     _debug_log(
-        debug_enabled,
         task_id,
-        f"starting request include_image={include_image} question_len={len(_extract_question(task_data))} image_count={len(image_refs)} max_tokens={max_tokens}",
+        (
+            f"starting request include_image={include_image} "
+            f"question_len={len(question)} image_count={len(image_refs)} "
+            f"max_tokens={kwargs.get('max_tokens')}"
+        ),
+        debug,
     )
     if image_refs:
-        preview = ", ".join(image_refs[:2])
-        if len(image_refs) > 2:
-            preview += ", ..."
-        _debug_log(debug_enabled, task_id, f"image_refs={preview}")
+        _debug_log(task_id, f"image_refs={','.join(image_refs)}", debug)
 
-    completion_kwargs: Dict[str, Any] = {
-        "model": model_name,
-        "messages": [{"role": "user", "content": _build_user_content(task_data, include_image)}],
-        "temperature": temperature,
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+    mode = _get_model_mode(**kwargs)
+    max_iterations = int(kwargs.get("max_iterations", 8))
+
+    conversation_history: List[Dict[str, Any]] = []
+    tool_call_count = 0
+    sandbox_error_types: List[str] = []
+    executor = _create_code_executor(code_executor, sandbox_url) if enable_tools else None
+    final_answer = ""
+
+    try:
+        for iteration in range(max_iterations):
+            raw_response = _invoke_completion(
+                messages=messages,
+                model_name=model_name,
+                tools=[PYTHON_EXECUTION_TOOL] if enable_tools else None,
+                api_base_url=api_base_url,
+                api_key=api_key,
+                **kwargs,
+            )
+            finish_reason, assistant_message, thinking_content = _normalize_model_response(
+                raw_response, mode, iteration
+            )
+            final_answer = assistant_message.content or ""
+            response_preview = (final_answer or "").replace("\n", " ")[:160]
+            _debug_log(
+                task_id,
+                (
+                    f"request finished include_image={include_image} "
+                    f"response_len={len(final_answer)} response_preview={response_preview!r}"
+                ),
+                debug,
+            )
+
+            assistant_record: Dict[str, Any] = {
+                "iteration": iteration,
+                "role": "assistant",
+                "content": final_answer,
+            }
+            if thinking_content:
+                assistant_record["thinking_content"] = thinking_content
+
+            tool_calls = getattr(assistant_message, "tool_calls", None)
+            if tool_calls:
+                assistant_record["tool_calls"] = [
+                    {
+                        "id": tool_call.id,
+                        "function_name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    }
+                    for tool_call in tool_calls
+                ]
+            conversation_history.append(assistant_record)
+            messages.append(_assistant_message_to_dict(assistant_message))
+
+            if not enable_tools or finish_reason == "stop" or not tool_calls:
+                break
+
+            for tool_call in tool_calls:
+                if tool_call.function.name != "execute_python":
+                    continue
+                try:
+                    arguments = json.loads(tool_call.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    arguments = {"code": ""}
+
+                code = str(arguments.get("code", ""))
+                execution_result = executor.execute_code(code)
+                tool_call_count += 1
+                error_type = execution_result.get("error_type")
+                if error_type:
+                    sandbox_error_types.append(error_type)
+
+                tool_output = str(execution_result.get("output", "(No output)"))
+                conversation_history.append(
+                    {
+                        "iteration": iteration,
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "code": code,
+                        "result": tool_output,
+                        "error_type": error_type,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": tool_output,
+                    }
+                )
+        return final_answer, {
+            "tool_call_count": tool_call_count,
+            "conversation_history": conversation_history,
+            "sandbox_error_types": sandbox_error_types,
+            "benchmark_name": benchmark_name,
+        }
+    finally:
+        if executor is not None:
+            executor.destroy()
+
+
+def _merge_channel_metrics(channel_metrics: Iterable[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    merged_history: List[Dict[str, Any]] = []
+    merged_error_types: List[str] = []
+    tool_call_count = 0
+
+    for channel_name, metrics in channel_metrics:
+        if not metrics:
+            continue
+        tool_call_count += int(metrics.get("tool_call_count", 0))
+        merged_error_types.extend(metrics.get("sandbox_error_types", []))
+        for turn in metrics.get("conversation_history", []):
+            if isinstance(turn, dict):
+                merged_history.append({**turn, "channel": channel_name})
+
+    return {
+        "tool_call_count": tool_call_count,
+        "conversation_history": merged_history,
+        "sandbox_error_types": merged_error_types,
     }
-    if max_tokens is not None:
-        completion_kwargs["max_tokens"] = max_tokens
-
-    response = client.chat.completions.create(**completion_kwargs)
-    text = _normalize_text(response.choices[0].message.content or "")
-    _debug_log(
-        debug_enabled,
-        task_id,
-        f"request finished include_image={include_image} response_len={len(text)} response_preview={text[:120]!r}",
-    )
-    return text
 
 
 def _solve_standard_vqa_task(
-    client: OpenAI,
-    model_name: str,
-    task_data: Dict[str, Any],
-    temperature: float,
-    max_tokens: Optional[int],
     task_id: str,
-    debug_enabled: bool,
-) -> str:
-    return _chat_once(
-        client=client,
-        model_name=model_name,
-        task_data=task_data,
-        include_image=True,
-        temperature=temperature,
-        max_tokens=max_tokens,
+    task_data: Dict[str, Any],
+    benchmark_name: str,
+    debug: bool,
+    enable_tools: bool,
+    code_executor: str,
+    sandbox_url: Optional[str],
+    **kwargs: Any,
+) -> Any:
+    channel_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key not in {"model_name", "benchmark_name", "debug", "enable_tools", "code_executor", "sandbox_url"}
+    }
+    answer, metrics = _solve_single_channel(
         task_id=task_id,
-        debug_enabled=debug_enabled,
+        task_data=task_data,
+        benchmark_name=benchmark_name,
+        model_name=kwargs["model_name"],
+        include_image=True,
+        debug=debug,
+        enable_tools=enable_tools,
+        code_executor=code_executor,
+        sandbox_url=sandbox_url,
+        **channel_kwargs,
     )
+    if enable_tools:
+        return {"answer": answer, "metrics": metrics}
+    return answer
 
 
 def _solve_mmstar_task(
-    client: OpenAI,
-    model_name: str,
-    task_data: Dict[str, Any],
-    temperature: float,
-    max_tokens: Optional[int],
-    base_model_name: Optional[str],
-    base_client: Optional[OpenAI],
     task_id: str,
-    debug_enabled: bool,
-) -> Dict[str, str]:
-    vision_answer = _chat_once(
-        client=client,
-        model_name=model_name,
+    task_data: Dict[str, Any],
+    benchmark_name: str,
+    debug: bool,
+    enable_tools: bool,
+    code_executor: str,
+    sandbox_url: Optional[str],
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    channel_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key not in {"model_name", "benchmark_name", "debug", "enable_tools", "code_executor", "sandbox_url"}
+    }
+    vision_answer, vision_metrics = _solve_single_channel(
+        task_id=task_id,
         task_data=task_data,
+        benchmark_name=benchmark_name,
+        model_name=kwargs["model_name"],
         include_image=True,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        task_id=task_id,
-        debug_enabled=debug_enabled,
+        debug=debug,
+        enable_tools=enable_tools,
+        code_executor=code_executor,
+        sandbox_url=sandbox_url,
+        **channel_kwargs,
     )
-    no_image_answer = _chat_once(
-        client=client,
-        model_name=model_name,
-        task_data=task_data,
-        include_image=False,
-        temperature=temperature,
-        max_tokens=max_tokens,
+    no_image_answer, no_image_metrics = _solve_single_channel(
         task_id=task_id,
-        debug_enabled=debug_enabled,
+        task_data=task_data,
+        benchmark_name=benchmark_name,
+        model_name=kwargs["model_name"],
+        include_image=False,
+        debug=debug,
+        enable_tools=enable_tools,
+        code_executor=code_executor,
+        sandbox_url=sandbox_url,
+        **channel_kwargs,
     )
 
-    if base_model_name and base_client is not None:
-        base_llm_answer = _chat_once(
-            client=base_client,
-            model_name=base_model_name,
-            task_data=task_data,
-            include_image=False,
-            temperature=temperature,
-            max_tokens=max_tokens,
+    base_model_name = kwargs.get("base_model_name")
+    base_openai_base_url = kwargs.get("base_openai_base_url")
+    base_openai_api_key = kwargs.get("base_openai_api_key")
+
+    if base_model_name or base_openai_base_url or base_openai_api_key:
+        base_llm_answer, base_llm_metrics = _solve_single_channel(
             task_id=task_id,
-            debug_enabled=debug_enabled,
+            task_data=task_data,
+            benchmark_name=benchmark_name,
+            model_name=base_model_name or kwargs["model_name"],
+            include_image=False,
+            debug=debug,
+            enable_tools=enable_tools,
+            code_executor=code_executor,
+            sandbox_url=sandbox_url,
+            api_base_url=base_openai_base_url,
+            api_key=base_openai_api_key,
+            **channel_kwargs,
         )
     else:
         base_llm_answer = no_image_answer
+        base_llm_metrics = {}
 
-    return {
+    result = {
         "vision_answer": vision_answer,
         "no_image_answer": no_image_answer,
         "base_llm_answer": base_llm_answer,
     }
+    if enable_tools:
+        result["metrics"] = _merge_channel_metrics(
+            [
+                ("vision", vision_metrics),
+                ("no_image", no_image_metrics),
+                ("base_llm", base_llm_metrics),
+            ]
+        )
+    return result
 
 
-def run_vqa_agent(input: Dict[str, Dict[str, Any]], **kwargs) -> Dict[str, Any]:
+def run_vqa_agent(input: Dict[str, Dict[str, Any]], **kwargs: Any) -> Dict[str, Any]:
     assert "model_name" in kwargs, "model_name is required"
 
-    model_name = kwargs["model_name"]
-    temperature = float(kwargs.get("temperature", 0.0))
-    max_tokens = (
-        int(kwargs["max_tokens"])
-        if "max_tokens" in kwargs and kwargs["max_tokens"] is not None
-        else None
-    )
-    timeout = float(kwargs.get("timeout", 300))
-    debug_enabled = _is_debug_enabled(kwargs)
-
-    client = _create_client(timeout=timeout)
-
-    base_model_name = kwargs.get("base_model_name") or os.getenv("BASE_MODEL_NAME")
-    base_client = None
-    if base_model_name:
-        base_client = _create_client(
-            base_url=kwargs.get("base_openai_base_url") or os.getenv("BASE_OPENAI_BASE_URL"),
-            api_key=kwargs.get("base_openai_api_key") or os.getenv("BASE_OPENAI_API_KEY", "EMPTY"),
-            timeout=timeout,
-        )
-
-    results: Dict[str, Any] = {}
     benchmark_name = str(kwargs.get("benchmark_name", ""))
+    debug = _is_debug_enabled(kwargs)
+    enable_tools = _as_bool(kwargs.get("enable_tools"), default=True)
+    code_executor = str(kwargs.get("code_executor", "local")).strip().lower()
+    sandbox_url = kwargs.get("sandbox_url")
+    solver_kwargs = {
+        key: value
+        for key, value in kwargs.items()
+        if key not in {"benchmark_name", "debug", "enable_tools", "code_executor", "sandbox_url"}
+    }
 
-    for task_id, original_task_data in input.items():
-        task_data = dict(original_task_data)
-        task_data["benchmark_name"] = benchmark_name
+    outputs: Dict[str, Any] = {}
+    for task_id, task_data in input.items():
+        task_payload = task_data if isinstance(task_data, dict) else {}
         _debug_log(
-            debug_enabled,
-            task_id,
-            f"task received benchmark={benchmark_name} timeout={timeout} has_question={bool(_extract_question(task_data))} media={_summarize_task_media(task_data)}",
+            str(task_id),
+            (
+                f"task received benchmark={benchmark_name or 'unknown'} "
+                f"timeout={kwargs.get('timeout')} has_question={bool(_extract_question(task_payload))} "
+                f"media={_summarize_task_media(task_payload)}"
+            ),
+            debug,
         )
-
         try:
             if benchmark_name == "mmstar":
-                results[task_id] = _solve_mmstar_task(
-                    client=client,
-                    model_name=model_name,
-                    task_data=task_data,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    base_model_name=base_model_name,
-                    base_client=base_client,
-                    task_id=task_id,
-                    debug_enabled=debug_enabled,
+                outputs[task_id] = _solve_mmstar_task(
+                    str(task_id),
+                    task_payload,
+                    benchmark_name,
+                    debug,
+                    enable_tools,
+                    code_executor,
+                    sandbox_url,
+                    **solver_kwargs,
                 )
             else:
-                results[task_id] = _solve_standard_vqa_task(
-                    client=client,
-                    model_name=model_name,
-                    task_data=task_data,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    task_id=task_id,
-                    debug_enabled=debug_enabled,
+                outputs[task_id] = _solve_standard_vqa_task(
+                    str(task_id),
+                    task_payload,
+                    benchmark_name,
+                    debug,
+                    enable_tools,
+                    code_executor,
+                    sandbox_url,
+                    **solver_kwargs,
                 )
-        except Exception as exc:
-            _debug_log(debug_enabled, task_id, f"request failed error={exc}")
+        except Exception as exc:  # pragma: no cover - exercised in integration runtime
+            error_text = f"ERROR: {exc}"
+            _debug_log(str(task_id), f"request failed error={error_text}", debug)
             if benchmark_name == "mmstar":
-                error_text = f"ERROR: {exc}"
-                results[task_id] = {
+                outputs[task_id] = {
                     "vision_answer": error_text,
                     "no_image_answer": error_text,
                     "base_llm_answer": error_text,
                 }
             else:
-                results[task_id] = f"ERROR: {exc}"
+                outputs[task_id] = error_text
 
-    return results
+    return outputs
