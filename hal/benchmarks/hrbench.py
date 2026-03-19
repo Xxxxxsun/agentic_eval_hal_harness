@@ -87,6 +87,24 @@ class HRBenchBenchmark(BaseBenchmark):
         from datasets import load_dataset
 
         dataset_attempts = []
+        split_name = {
+            "hrbench4k": "hrbench_4k",
+            "hrbench8k": "hrbench_8k",
+        }[self.benchmark_name]
+
+        try:
+            return list(
+                load_dataset(
+                    "DreamMr/HR-Bench",
+                    "hrbench_version_split",
+                    split=split_name,
+                )
+            )
+        except Exception as exc:
+            dataset_attempts.append(
+                f"config=hrbench_version_split, split={split_name}: {exc}"
+            )
+
         config_candidates = {
             "hrbench4k": ("4k", "4K", "hrbench4k", "HRBench4K"),
             "hrbench8k": ("8k", "8K", "hrbench8k", "HRBench8K"),
