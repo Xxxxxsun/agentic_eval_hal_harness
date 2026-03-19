@@ -19,10 +19,11 @@
 | 参数 | 必填 | 说明 | 示例 |
 |------|------|------|------|
 | `--model-name` | ✅ | 模型名称，用于 vLLM 服务和评测标识 | `qwen3-32b` |
-| `--benchmark` | ✅ | 评测基准名称，需对应 `agents/` 目录下的 agent | `aime2025`, `imo_answerbench` |
+| `--benchmark` | ✅ | 评测基准名称，需对应 `agents/` 目录下的 agent | `aime2025`, `gpqa_diamond`, `imo_answerbench` |
 | `--max-tasks` | ❌ | 限制评测的最大任务数量，用于快速测试 | `10` |
 | `--num-samples` | ❌ | 每个任务的采样次数，用于计算 pass@N 和 avg@N | `5` |
 | `--max-concurrent` | ❌ | 单次遍历中同时运行的最大任务数 | `4` |
+| `--enable-tools` | ❌ | 是否允许模型使用代码工具（默认 `true`），设为 `false` 时模型仅纯文本推理 | `true`, `false` |
 
 #### 示例
 
@@ -59,11 +60,20 @@
     --max-concurrent 8
 ```
 
+**禁用工具调用**（模型仅纯文本推理，不使用代码沙盒）：
+```bash
+./scripts/local_vllm_server_eval.sh \
+    --model-name qwen3-32b \
+    --benchmark aime2025 \
+    --enable-tools false
+```
+
 ## 支持的评测基准
 
 | 基准名称 | 说明 | Agent 目录 |
 |----------|------|------------|
 | `aime2025` | AIME 2025 数学竞赛题目（30 题） | `agents/aime2025_agent` |
+| `gpqa_diamond` | GPQA Diamond 研究生级别科学问答（198 题，涵盖生物、物理、化学） | `agents/gpqa_diamond_agent` |
 | `imo_answerbench` | IMO 级别奥数简答题（400 题） | `agents/imo_answerbench_agent` |
 
 ## 评测指标
@@ -72,18 +82,21 @@
 
 - **accuracy**: 正确率
 - **total_tool_calls**: 工具调用总次数
-- **successful_tool_calls**: 成功的工具调用次数（返回结果不含 "error"）
-- **failed_tool_calls**: 失败的工具调用次数（返回结果含 "error"）
+- **successful_tool_calls**: 成功的工具调用次数
+- **failed_tool_calls**: 失败的工具调用次数（基于 `sandbox_error_types` 精确统计）
 - **tasks_with_tool_calls**: 使用了工具的任务数量
+- **sandbox_error_type_counts**: 沙盒执行错误类型的细粒度分布（按 `ename` 统计，如 `SyntaxError`、`NameError`、`TimeoutError` 等）
 
 ### 多次采样指标（`--num-samples > 1` 时）
 
 - **avg@N**: 所有任务的平均正确率（每个任务 N 次采样的平均值再取平均）
 - **pass@N**: 至少有一次正确的任务比例
-- **avg_tool_calls_per_round**: 每轮采样的平均工具调用总数
-- **avg_successful_tool_calls_per_round**: 每轮采样的平均成功工具调用总数
-- **avg_failed_tool_calls_per_round**: 每轮采样的平均失败工具调用总数
-- **avg_tasks_with_tool_calls_per_round**: 每轮采样中使用了工具的任务平均数量
+- **avg_tool_calls_per_sample**: 每个样本（task × round）的平均工具调用次数
+- **avg_successful_tool_calls_per_sample**: 每个样本的平均成功工具调用次数
+- **avg_failed_tool_calls_per_sample**: 每个样本的平均失败工具调用次数
+- **tool_call_usage_rate_per_sample**: 使用了工具调用的样本占总样本的比例（0~1）
+- **sandbox_error_type_counts**: 所有轮次汇总的沙盒错误类型分布
+- **per_round_sandbox_error_type_counts**: 按轮次分别统计的沙盒错误类型分布
 
 ## 环境要求
 
