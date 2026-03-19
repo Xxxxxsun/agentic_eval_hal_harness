@@ -1,6 +1,7 @@
 import base64
 import mimetypes
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -11,6 +12,20 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
+
+
+def _is_debug_enabled(kwargs: Dict[str, Any]) -> bool:
+    raw_value = kwargs.get("debug")
+    if raw_value is None:
+        raw_value = os.getenv("VQA_AGENT_DEBUG", "")
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _debug_log(enabled: bool, task_id: str, message: str) -> None:
+    if not enabled:
+        return
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    print(f"[vqa_agent][{timestamp}][task={task_id}] {message}", flush=True)
 
 
 def _extract_question(task_data: Dict[str, Any]) -> str:
@@ -162,7 +177,21 @@ def _chat_once(
     include_image: bool,
     temperature: float,
     max_tokens: Optional[int],
+    task_id: str,
+    debug_enabled: bool,
 ) -> str:
+    image_refs = _collect_image_references(task_data) if include_image else []
+    _debug_log(
+        debug_enabled,
+        task_id,
+        f"starting request include_image={include_image} question_len={len(_extract_question(task_data))} image_count={len(image_refs)} max_tokens={max_tokens}",
+    )
+    if image_refs:
+        preview = ", ".join(image_refs[:2])
+        if len(image_refs) > 2:
+            preview += ", ..."
+        _debug_log(debug_enabled, task_id, f"image_refs={preview}")
+
     completion_kwargs: Dict[str, Any] = {
         "model": model_name,
         "messages": [{"role": "user", "content": _build_user_content(task_data, include_image)}],
@@ -172,7 +201,13 @@ def _chat_once(
         completion_kwargs["max_tokens"] = max_tokens
 
     response = client.chat.completions.create(**completion_kwargs)
-    return _normalize_text(response.choices[0].message.content or "")
+    text = _normalize_text(response.choices[0].message.content or "")
+    _debug_log(
+        debug_enabled,
+        task_id,
+        f"request finished include_image={include_image} response_len={len(text)} response_preview={text[:120]!r}",
+    )
+    return text
 
 
 def _solve_standard_vqa_task(
@@ -181,6 +216,8 @@ def _solve_standard_vqa_task(
     task_data: Dict[str, Any],
     temperature: float,
     max_tokens: Optional[int],
+    task_id: str,
+    debug_enabled: bool,
 ) -> str:
     return _chat_once(
         client=client,
@@ -189,6 +226,8 @@ def _solve_standard_vqa_task(
         include_image=True,
         temperature=temperature,
         max_tokens=max_tokens,
+        task_id=task_id,
+        debug_enabled=debug_enabled,
     )
 
 
@@ -200,6 +239,8 @@ def _solve_mmstar_task(
     max_tokens: Optional[int],
     base_model_name: Optional[str],
     base_client: Optional[OpenAI],
+    task_id: str,
+    debug_enabled: bool,
 ) -> Dict[str, str]:
     vision_answer = _chat_once(
         client=client,
@@ -208,6 +249,8 @@ def _solve_mmstar_task(
         include_image=True,
         temperature=temperature,
         max_tokens=max_tokens,
+        task_id=task_id,
+        debug_enabled=debug_enabled,
     )
     no_image_answer = _chat_once(
         client=client,
@@ -216,6 +259,8 @@ def _solve_mmstar_task(
         include_image=False,
         temperature=temperature,
         max_tokens=max_tokens,
+        task_id=task_id,
+        debug_enabled=debug_enabled,
     )
 
     if base_model_name and base_client is not None:
@@ -226,6 +271,8 @@ def _solve_mmstar_task(
             include_image=False,
             temperature=temperature,
             max_tokens=max_tokens,
+            task_id=task_id,
+            debug_enabled=debug_enabled,
         )
     else:
         base_llm_answer = no_image_answer
@@ -248,6 +295,7 @@ def run_vqa_agent(input: Dict[str, Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         else None
     )
     timeout = float(kwargs.get("timeout", 300))
+    debug_enabled = _is_debug_enabled(kwargs)
 
     client = _create_client(timeout=timeout)
 
@@ -266,6 +314,11 @@ def run_vqa_agent(input: Dict[str, Dict[str, Any]], **kwargs) -> Dict[str, Any]:
     for task_id, original_task_data in input.items():
         task_data = dict(original_task_data)
         task_data["benchmark_name"] = benchmark_name
+        _debug_log(
+            debug_enabled,
+            task_id,
+            f"task received benchmark={benchmark_name} timeout={timeout} has_question={bool(_extract_question(task_data))}",
+        )
 
         try:
             if benchmark_name == "mmstar":
@@ -277,6 +330,8 @@ def run_vqa_agent(input: Dict[str, Dict[str, Any]], **kwargs) -> Dict[str, Any]:
                     max_tokens=max_tokens,
                     base_model_name=base_model_name,
                     base_client=base_client,
+                    task_id=task_id,
+                    debug_enabled=debug_enabled,
                 )
             else:
                 results[task_id] = _solve_standard_vqa_task(
@@ -285,8 +340,11 @@ def run_vqa_agent(input: Dict[str, Dict[str, Any]], **kwargs) -> Dict[str, Any]:
                     task_data=task_data,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    task_id=task_id,
+                    debug_enabled=debug_enabled,
                 )
         except Exception as exc:
+            _debug_log(debug_enabled, task_id, f"request failed error={exc}")
             if benchmark_name == "mmstar":
                 error_text = f"ERROR: {exc}"
                 results[task_id] = {
