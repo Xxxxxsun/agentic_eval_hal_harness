@@ -28,6 +28,19 @@ def _debug_log(enabled: bool, task_id: str, message: str) -> None:
     print(f"[vqa_agent][{timestamp}][task={task_id}] {message}", flush=True)
 
 
+def _summarize_task_media(task_data: Dict[str, Any]) -> str:
+    summary = {
+        "image_path": task_data.get("image_path"),
+        "file_name": task_data.get("file_name"),
+        "image_url": task_data.get("image_url"),
+        "image_paths_len": len(task_data.get("image_paths") or []),
+        "image_urls_len": len(task_data.get("image_urls") or []),
+        "files_len": len(task_data.get("files") or {}),
+        "choices_len": len(_extract_choices(task_data)),
+    }
+    return str(summary)
+
+
 def _extract_question(task_data: Dict[str, Any]) -> str:
     for key in ("question", "problem", "prompt", "query", "instruction", "text"):
         value = _normalize_text(task_data.get(key))
@@ -317,7 +330,7 @@ def run_vqa_agent(input: Dict[str, Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         _debug_log(
             debug_enabled,
             task_id,
-            f"task received benchmark={benchmark_name} timeout={timeout} has_question={bool(_extract_question(task_data))}",
+            f"task received benchmark={benchmark_name} timeout={timeout} has_question={bool(_extract_question(task_data))} media={_summarize_task_media(task_data)}",
         )
 
         try:
