@@ -3,7 +3,6 @@ import sys
 import tempfile
 import types
 import unittest
-import importlib.util
 from pathlib import Path
 from unittest.mock import patch
 
@@ -91,15 +90,6 @@ from hal.benchmarks._benchmark_utils import (
     extract_inline_choices_from_text,
 )
 from hal.benchmarks.vstar_bench import VStarBenchBenchmark, parse_vstar_row
-
-_VQA_RUNTIME_SPEC = importlib.util.spec_from_file_location(
-    "test_vqa_runtime",
-    "/Users/macbook/Desktop/exp_ali/agentic_eval_hal_harness/agents/common/vqa_runtime.py",
-)
-_VQA_RUNTIME_MODULE = importlib.util.module_from_spec(_VQA_RUNTIME_SPEC)
-assert _VQA_RUNTIME_SPEC.loader is not None
-_VQA_RUNTIME_SPEC.loader.exec_module(_VQA_RUNTIME_MODULE)
-_postprocess_response = _VQA_RUNTIME_MODULE._postprocess_response
 
 
 class BenchmarkIntegrationTests(unittest.TestCase):
@@ -197,16 +187,6 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                 "D": "leather",
             },
         )
-
-    def test_vqa_choice_postprocess_returns_letter(self) -> None:
-        processed = _postprocess_response(
-            {"choices": {"A": "rubber", "B": "cotton", "C": "kevlar", "D": "leather"}},
-            (
-                "The glove looks like disposable nitrile or latex, so the best choice is "
-                "(A) rubber. Final answer: A"
-            ),
-        )
-        self.assertEqual(processed, "A")
 
     def test_hrbench_row_parsing_and_metrics(self) -> None:
         parsed = parse_hrbench_row(
