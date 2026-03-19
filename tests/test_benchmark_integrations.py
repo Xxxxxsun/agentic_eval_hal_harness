@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 
@@ -84,6 +85,7 @@ from hal.benchmark_manager import BenchmarkManager
 from hal.benchmarks.hrbench import HRBenchBenchmark, parse_hrbench_row
 from hal.benchmarks.mathvista import MathVistaBenchmark, parse_mathvista_row
 from hal.benchmarks.mmstar import MMStarBenchmark, parse_mmstar_row
+from hal.benchmarks._benchmark_utils import _LOCAL_ASSET_PATH_CACHE
 from hal.benchmarks.vstar_bench import VStarBenchBenchmark, parse_vstar_row
 
 
@@ -98,23 +100,30 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_vstar_row_parsing_and_metrics(self) -> None:
-        parsed = parse_vstar_row(
-            {
-                "id": "1",
-                "question": "Which option is correct?",
-                "choices": ["Alpha", "Beta", "Gamma", "Delta"],
-                "answer": "B",
-                "task": "reasoning",
-                "category": "multi_choice",
-                "source": "official",
-                "image": self.image_path,
-            },
-            0,
-        )
+        _LOCAL_ASSET_PATH_CACHE.clear()
+        local_cache_root = Path(self.temp_dir.name) / "hf_cache" / "datasets"
+        local_cache_image = local_cache_root / "direct_attributes" / "sa_4690.jpg"
+        local_cache_image.parent.mkdir(parents=True, exist_ok=True)
+        local_cache_image.write_bytes(b"fake-jpg")
+        with patch.dict(os.environ, {"HF_DATASETS_CACHE": str(local_cache_root)}, clear=False):
+            parsed = parse_vstar_row(
+                {
+                    "id": "1",
+                    "text": "Which option is correct?",
+                    "choices": ["Alpha", "Beta", "Gamma", "Delta"],
+                    "answer": "B",
+                    "task": "reasoning",
+                    "category": "multi_choice",
+                    "source": "official",
+                    "image": "direct_attributes/sa_4690.jpg",
+                },
+                0,
+            )
 
         self.assertEqual(parsed["task_id"], "1")
-        self.assertEqual(parsed["task"]["file_name"], "images/1_0.png")
-        self.assertIn("images/1_0.png", parsed["task"]["files"])
+        self.assertEqual(parsed["task"]["question"], "Which option is correct?")
+        self.assertEqual(parsed["task"]["file_name"], "images/1_0.jpg")
+        self.assertIn("images/1_0.jpg", parsed["task"]["files"])
 
         with patch.object(
             VStarBenchBenchmark,
@@ -122,16 +131,16 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             return_value=[
                 {
                     "id": "1",
-                    "question": "Which option is correct?",
+                    "text": "Which option is correct?",
                     "choices": ["Alpha", "Beta", "Gamma", "Delta"],
                     "answer": "B",
                     "task": "reasoning",
                     "category": "multi_choice",
                     "source": "official",
-                    "image": self.image_path,
+                    "image": "direct_attributes/sa_4690.jpg",
                 }
             ],
-        ):
+        ), patch.dict(os.environ, {"HF_DATASETS_CACHE": str(local_cache_root)}, clear=False):
             benchmark = VStarBenchBenchmark("agents", {})
 
         eval_results = benchmark.evaluate_output({"1": "ANSWER: B"}, "run")

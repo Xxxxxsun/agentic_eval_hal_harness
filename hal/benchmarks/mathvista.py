@@ -24,7 +24,11 @@ BREAKDOWN_FIELDS = ("question_type", "answer_type", "task", "source", "category"
 
 def parse_mathvista_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
     task_id = str(pick_first(row, ("pid", "id", "question_id"), default=f"mathvista_{row_idx}"))
-    question = pick_first(row, ("question", "prompt", "query", "instruction"), default="")
+    question = pick_first(
+        row,
+        ("question", "text", "prompt", "query", "instruction"),
+        default="",
+    )
     answer = pick_first(
         row,
         ("answer", "decoded_answer", "gt_answer", "label", "correct_answer"),
@@ -49,6 +53,7 @@ def parse_mathvista_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
                 "id",
                 "question_id",
                 "question",
+                "text",
                 "prompt",
                 "query",
                 "instruction",

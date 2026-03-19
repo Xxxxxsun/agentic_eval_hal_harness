@@ -4,11 +4,21 @@ import re
 import string
 import tempfile
 from fractions import Fraction
+from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
+from urllib.parse import quote
 
 
 CHOICE_LABELS = tuple(string.ascii_uppercase)
 ASSET_CACHE_DIR = os.path.join(tempfile.gettempdir(), "hal_benchmark_assets")
+BENCHMARK_DATASET_REPOS = {
+    "vstar_bench": "craigwu/vstar_bench",
+    "hrbench4k": "DreamMr/HR-Bench",
+    "hrbench8k": "DreamMr/HR-Bench",
+    "mathvista": "AI4Math/MathVista",
+    "mmstar": "Lin-Chen/MMStar",
+}
+_LOCAL_ASSET_PATH_CACHE: Dict[str, Optional[str]] = {}
 
 
 def pick_first(mapping: Dict[str, Any], keys: Iterable[str], default: Any = None) -> Any:
@@ -243,6 +253,70 @@ def extract_serializable_metadata(
     return metadata
 
 
+def _candidate_local_asset_roots() -> Iterable[Path]:
+    env_roots = [
+        os.getenv("HF_DATASETS_CACHE"),
+        os.getenv("HUGGINGFACE_HUB_CACHE"),
+        os.getenv("HF_HOME"),
+    ]
+
+    roots = []
+    for root in env_roots:
+        if not root:
+            continue
+        root_path = Path(root).expanduser()
+        roots.append(root_path)
+        if root_path.name != "datasets":
+            roots.append(root_path / "datasets")
+            roots.append(root_path / "hub")
+
+    default_hf_root = Path.home() / ".cache" / "huggingface"
+    roots.extend([default_hf_root, default_hf_root / "datasets", default_hf_root / "hub"])
+    roots.append(Path.cwd())
+
+    seen = set()
+    for root in roots:
+        resolved = str(root)
+        if resolved in seen or not root.exists():
+            continue
+        seen.add(resolved)
+        yield root
+
+
+def _resolve_local_asset_path(asset_path: str) -> Optional[str]:
+    normalized = asset_path.lstrip("/")
+    if not normalized:
+        return None
+
+    cache_key = normalized
+    if cache_key in _LOCAL_ASSET_PATH_CACHE:
+        return _LOCAL_ASSET_PATH_CACHE[cache_key]
+
+    target = Path(normalized)
+    basename = target.name
+    suffix = str(target).replace("\\", "/")
+
+    for root in _candidate_local_asset_roots():
+        direct_match = root / target
+        if direct_match.exists():
+            resolved = str(direct_match.resolve())
+            _LOCAL_ASSET_PATH_CACHE[cache_key] = resolved
+            return resolved
+
+        try:
+            for candidate in root.rglob(basename):
+                candidate_suffix = str(candidate).replace("\\", "/")
+                if candidate_suffix.endswith(suffix):
+                    resolved = str(candidate.resolve())
+                    _LOCAL_ASSET_PATH_CACHE[cache_key] = resolved
+                    return resolved
+        except OSError:
+            continue
+
+    _LOCAL_ASSET_PATH_CACHE[cache_key] = None
+    return None
+
+
 def _materialize_asset(asset: Any, benchmark_name: str, file_stub: str) -> Optional[str]:
     asset_dir = os.path.join(ASSET_CACHE_DIR, benchmark_name)
     os.makedirs(asset_dir, exist_ok=True)
@@ -252,6 +326,13 @@ def _materialize_asset(asset: Any, benchmark_name: str, file_stub: str) -> Optio
             return asset
         if os.path.exists(asset):
             return os.path.abspath(asset)
+        resolved_local_path = _resolve_local_asset_path(asset)
+        if resolved_local_path:
+            return resolved_local_path
+        dataset_repo = BENCHMARK_DATASET_REPOS.get(benchmark_name)
+        asset_extension = os.path.splitext(asset)[1].lower()
+        if dataset_repo and asset_extension in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+            return f"https://huggingface.co/datasets/{dataset_repo}/resolve/main/{quote(asset.lstrip('/'))}"
         return None
 
     if isinstance(asset, dict):

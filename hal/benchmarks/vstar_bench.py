@@ -21,7 +21,11 @@ def parse_vstar_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
     task_id = str(
         pick_first(row, ("id", "question_id", "qid", "pid"), default=f"vstar_bench_{row_idx}")
     )
-    question = pick_first(row, ("question", "prompt", "query", "instruction"), default="")
+    question = pick_first(
+        row,
+        ("question", "text", "prompt", "query", "instruction"),
+        default="",
+    )
     answer = pick_first(
         row,
         ("answer", "gt_answer", "label", "correct_answer", "solution"),
@@ -41,6 +45,7 @@ def parse_vstar_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
                 "qid",
                 "pid",
                 "question",
+                "text",
                 "prompt",
                 "query",
                 "instruction",

@@ -27,7 +27,11 @@ def parse_hrbench_row(
             default=f"{benchmark_name}_{row_idx}",
         )
     )
-    question = pick_first(row, ("question", "prompt", "query", "instruction"), default="")
+    question = pick_first(
+        row,
+        ("question", "text", "prompt", "query", "instruction"),
+        default="",
+    )
     answer = pick_first(
         row,
         ("answer", "gt_answer", "label", "correct_answer", "solution"),
@@ -47,6 +51,7 @@ def parse_hrbench_row(
                 "qid",
                 "pid",
                 "question",
+                "text",
                 "prompt",
                 "query",
                 "instruction",

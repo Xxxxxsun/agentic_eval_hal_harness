@@ -14,10 +14,17 @@ def _normalize_text(value: Any) -> str:
 
 
 def _extract_question(task_data: Dict[str, Any]) -> str:
-    for key in ("question", "problem", "prompt", "query", "instruction"):
+    for key in ("question", "problem", "prompt", "query", "instruction", "text"):
         value = _normalize_text(task_data.get(key))
         if value:
             return value
+
+    metadata = task_data.get("metadata") or {}
+    if isinstance(metadata, dict):
+        for key in ("question", "problem", "prompt", "query", "instruction", "text"):
+            value = _normalize_text(metadata.get(key))
+            if value:
+                return value
     return ""
 
 

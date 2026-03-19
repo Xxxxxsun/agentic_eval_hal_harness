@@ -21,7 +21,11 @@ REQUIRED_OUTPUT_FIELDS = ("vision_answer", "no_image_answer", "base_llm_answer")
 
 def parse_mmstar_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
     task_id = str(pick_first(row, ("index", "id", "question_id", "qid"), default=f"mmstar_{row_idx}"))
-    question = pick_first(row, ("question", "prompt", "query", "instruction"), default="")
+    question = pick_first(
+        row,
+        ("question", "text", "prompt", "query", "instruction"),
+        default="",
+    )
     answer = pick_first(
         row,
         ("answer", "gt_answer", "label", "correct_answer", "solution"),
@@ -45,6 +49,7 @@ def parse_mmstar_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
                 "question_id",
                 "qid",
                 "question",
+                "text",
                 "prompt",
                 "query",
                 "instruction",
