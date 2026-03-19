@@ -129,6 +129,41 @@ def build_choice_map(raw_choices: Any) -> Dict[str, str]:
     return {}
 
 
+def extract_inline_choices_from_text(text: Any) -> Dict[str, str]:
+    normalized_text = str(text or "")
+    if not normalized_text:
+        return {}
+
+    patterns = [
+        re.compile(r"\(([A-Z])\)\s*(.*?)(?=\s*\([A-Z]\)\s*|\Z)", flags=re.DOTALL),
+        re.compile(
+            r"(?:^|\n)\s*([A-Z])[\.\):]\s*(.*?)(?=(?:\n\s*[A-Z][\.\):]\s)|\Z)",
+            flags=re.DOTALL,
+        ),
+    ]
+    trailing_instruction = re.compile(
+        r"\s+(?:answer|respond|choose|select)\b.*$",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+    for pattern in patterns:
+        matches = pattern.findall(normalized_text)
+        if len(matches) < 2:
+            continue
+
+        extracted: Dict[str, str] = {}
+        for label, option_text in matches:
+            normalized_option = normalize_text(option_text)
+            normalized_option = trailing_instruction.sub("", normalized_option).strip()
+            if label in CHOICE_LABELS and normalized_option:
+                extracted[label] = normalized_option
+
+        if len(extracted) >= 2:
+            return extracted
+
+    return {}
+
+
 def extract_choices_from_row(row: Dict[str, Any]) -> Dict[str, str]:
     for key in ("choices", "options", "candidates"):
         choices = build_choice_map(row.get(key))
@@ -152,7 +187,15 @@ def extract_choices_from_row(row: Dict[str, Any]) -> Dict[str, str]:
             if normalize_text(row.get(key)):
                 prefix_choices[label] = normalize_text(row[key])
                 break
-    return prefix_choices
+    if prefix_choices:
+        return prefix_choices
+
+    for text_key in ("question", "text", "prompt", "query", "instruction"):
+        inline_choices = extract_inline_choices_from_text(row.get(text_key))
+        if inline_choices:
+            return inline_choices
+
+    return {}
 
 
 def normalize_choice_label(answer: Any, choices: Dict[str, str]) -> str:
