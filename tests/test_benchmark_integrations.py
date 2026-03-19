@@ -246,6 +246,23 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics["accuracy"], 1.0)
         self.assertEqual(metrics["domain_accuracy"]["knowledge"], 1.0)
 
+    def test_hrbench_load_uses_version_split_config(self) -> None:
+        fake_rows = [{"id": "2", "question": "Q", "answer": "A"}]
+
+        datasets_module = types.ModuleType("datasets")
+        mock_load_dataset = unittest.mock.Mock(return_value=fake_rows)
+        datasets_module.load_dataset = mock_load_dataset
+
+        with patch.dict(sys.modules, {"datasets": datasets_module}):
+            benchmark = HRBenchBenchmark("agents", {}, "hrbench4k")
+
+        self.assertIn("2", benchmark.benchmark)
+        mock_load_dataset.assert_called_with(
+            "DreamMr/HR-Bench",
+            "hrbench_version_split",
+            split="hrbench_4k",
+        )
+
     def test_mathvista_parsing_evaluation_and_metrics(self) -> None:
         parsed = parse_mathvista_row(
             {
