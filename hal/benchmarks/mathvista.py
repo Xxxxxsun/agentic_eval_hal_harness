@@ -65,6 +65,8 @@ def parse_mathvista_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
                 "choices",
                 "options",
                 "candidates",
+                "decoded_image",
+                "decoded_images",
                 "image",
                 "images",
                 "img",

@@ -102,6 +102,14 @@ class BenchmarkIntegrationTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
+    class _FakeSavableImage:
+        def __init__(self, payload: bytes):
+            self.payload = payload
+
+        def save(self, path: str) -> None:
+            with open(path, "wb") as handle:
+                handle.write(self.payload)
+
     def test_vstar_row_parsing_and_metrics(self) -> None:
         _LOCAL_ASSET_PATH_CACHE.clear()
         local_cache_root = Path(self.temp_dir.name) / "hf_cache" / "datasets"
@@ -308,6 +316,22 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["accuracy"], 2 / 3)
         self.assertEqual(metrics["question_type_accuracy"]["multi_choice"], 1.0)
         self.assertEqual(metrics["question_type_accuracy"]["free_form"], 0.5)
+
+    def test_mathvista_prefers_decoded_image_asset(self) -> None:
+        parsed = parse_mathvista_row(
+            {
+                "pid": "mv_img",
+                "question": "Read the chart.",
+                "answer": "1.2",
+                "answer_type": "float",
+                "image": "images/1.jpg",
+                "decoded_image": self._FakeSavableImage(b"fake-mathvista-image"),
+            },
+            0,
+        )
+
+        self.assertEqual(parsed["task"]["file_name"], "images/mv_img_0.png")
+        self.assertIn("images/mv_img_0.png", parsed["task"]["files"])
 
     def test_mmstar_metrics_and_missing_channels(self) -> None:
         parsed = parse_mmstar_row(

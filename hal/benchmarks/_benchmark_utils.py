@@ -409,7 +409,10 @@ def prepare_task_media(
     row: Dict[str, Any], task_id: str, benchmark_name: str
 ) -> Dict[str, Any]:
     task_updates: Dict[str, Any] = {}
-    raw_assets = pick_first(row, ("images", "image", "img"))
+    raw_assets = pick_first(
+        row,
+        ("decoded_images", "decoded_image", "images", "image", "img"),
+    )
     if raw_assets in (None, "", []):
         return task_updates
 
