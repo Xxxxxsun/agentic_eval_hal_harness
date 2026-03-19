@@ -1,13 +1,88 @@
 """
-Sandbox executor module for running Python code in iagent sandbox.
+Code executor module for running Python code.
 
-This module provides a SandboxManager class that manages iagent sandbox instances
-for code execution with context preservation across multiple calls.
+This module provides two executor classes with the same interface:
+  - SandboxManager: Executes code in a remote iagent sandbox (isolated, resource-controlled).
+  - LocalPythonExecutor: Executes code locally via exec() (no network dependency, faster).
+
+Both preserve context across multiple execute_code() calls.
 """
 
+import io
 import os
+import sys
+import traceback
+
 from iagent.adk.sandbox.iagent_sandbox import IAgentSandbox, CodeLanguage, HttpConfig
 from iagent.adk.sandbox.sandbox_type import SandboxSpecConfig
+
+
+class LocalPythonExecutor:
+    """Executes Python code locally with context preservation across calls.
+
+    Uses exec() with a shared globals dictionary so that variables, imports,
+    and function definitions persist between successive execute_code() calls,
+    matching the behaviour of the remote sandbox.
+
+    Usage:
+        executor = LocalPythonExecutor()
+        result1 = executor.execute_code("x = 10")
+        result2 = executor.execute_code("print(x)")  # x is still available
+        executor.destroy()  # Reset state
+    """
+
+    def __init__(self, **kwargs):
+        """Initialize LocalPythonExecutor.
+
+        Any keyword arguments are accepted (and ignored) so that the
+        constructor signature is compatible with SandboxManager.
+        """
+        self._globals: dict = {"__builtins__": __builtins__}
+        self._initialized = True
+
+    def execute_code(self, code: str) -> dict:
+        """Execute Python code locally and return structured output.
+
+        Args:
+            code: Python code to execute.
+
+        Returns:
+            A dict with:
+              - output (str): The captured stdout or error message.
+              - error_type (str or None): The Python exception class name
+                when execution fails, or None on success.
+        """
+        captured_output = io.StringIO()
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = captured_output
+            exec(code, self._globals)
+            sys.stdout = old_stdout
+
+            output = captured_output.getvalue().strip()
+            if not output:
+                output = "(No output)"
+            if len(output) > 10000:
+                output = output[:10000] + "\n... [output truncated]"
+            return {"output": output, "error_type": None}
+        except Exception as execution_error:
+            sys.stdout = old_stdout
+            error_type = type(execution_error).__name__
+            error_tb = traceback.format_exc()
+            return {"output": f"Error: {error_tb}", "error_type": error_type}
+
+    def destroy(self):
+        """Reset the execution context."""
+        self._globals = {"__builtins__": __builtins__}
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit."""
+        self.destroy()
+        return False
 
 
 class SandboxManager:

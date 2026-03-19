@@ -24,6 +24,7 @@
 | `--num-samples` | ❌ | 每个任务的采样次数，用于计算 pass@N 和 avg@N | `5` |
 | `--max-concurrent` | ❌ | 单次遍历中同时运行的最大任务数 | `4` |
 | `--enable-tools` | ❌ | 是否允许模型使用代码工具（默认 `true`），设为 `false` 时模型仅纯文本推理 | `true`, `false` |
+| `--code-executor` | ❌ | 代码执行器类型（默认 `sandbox`）：`sandbox` 使用远程 iagent 沙盒，`local` 使用本地 Python 执行（更稳定，无网络依赖） | `sandbox`, `local` |
 | `--debug` | ❌ | 开启 debug 模式，评测完成后保持容器运行便于调试；不加此参数时评测完成后自动退出 | （flag，无需传值） |
 
 #### 示例
@@ -67,6 +68,14 @@
     --model-name qwen3-32b \
     --benchmark aime2025 \
     --enable-tools false
+```
+
+**使用本地 Python 执行器**（替代远程沙盒，更稳定）：
+```bash
+./scripts/local_vllm_server_eval.sh \
+    --model-name qwen3-32b \
+    --benchmark aime2025 \
+    --code-executor local
 ```
 
 **开启 debug 模式**（评测完成后保持容器运行，便于登录调试）：

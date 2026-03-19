@@ -7,7 +7,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from model_client import chat_completion_with_tools, _get_model_mode
-from common.sandbox_executor import SandboxManager
+from common.sandbox_executor import SandboxManager, LocalPythonExecutor
 
 SYSTEM_PROMPT = """\
 You are an expert mathematician solving challenging Olympiad-level problems \
@@ -182,10 +182,14 @@ def solve_problem(
 
     tools_list = [PYTHON_EXECUTION_TOOL] if enable_tools else None
 
-    # Create sandbox only when tools are enabled
-    sandbox_manager = SandboxManager(
-        base_url=kwargs.get("sandbox_url")
-    ) if enable_tools else None
+    # Create code executor only when tools are enabled
+    code_executor = None
+    if enable_tools:
+        code_executor_type = str(kwargs.get("code_executor", "sandbox")).lower()
+        if code_executor_type == "local":
+            code_executor = LocalPythonExecutor()
+        else:
+            code_executor = SandboxManager(base_url=kwargs.get("sandbox_url"))
 
     try:
         for iteration in range(max_iterations):
@@ -194,7 +198,7 @@ def solve_problem(
                 model=model_name,
                 tools=tools_list,
                 temperature=0.0,
-                **{k: v for k, v in kwargs.items() if k not in ("model_name", "sandbox_url", "enable_tools")},
+                **{k: v for k, v in kwargs.items() if k not in ("model_name", "sandbox_url", "enable_tools", "code_executor")},
             )
 
             if raw_response is None:
@@ -247,7 +251,7 @@ def solve_problem(
                 if tool_call.function.name == "execute_python":
                     arguments = json.loads(tool_call.function.arguments)
                     code = arguments.get("code", "")
-                    execution_result = sandbox_manager.execute_code(code)
+                    execution_result = code_executor.execute_code(code)
                     tool_call_count += 1
 
                     result_output = execution_result["output"]
@@ -289,9 +293,9 @@ def solve_problem(
             "sandbox_error_types": sandbox_error_types,
         }
     finally:
-        # Always destroy sandbox after task completes
-        if sandbox_manager is not None:
-            sandbox_manager.destroy()
+        # Always destroy code executor after task completes
+        if code_executor is not None:
+            code_executor.destroy()
 
 
 def run(input: dict[str, dict], **kwargs) -> dict[str, dict]:

@@ -9,6 +9,7 @@ MAX_TASKS=""
 NUM_SAMPLES=""
 MAX_CONCURRENT=""
 ENABLE_TOOLS=""
+CODE_EXECUTOR=""
 DEBUG_MODE=""
 
 while [[ $# -gt 0 ]]; do
@@ -37,13 +38,17 @@ while [[ $# -gt 0 ]]; do
             ENABLE_TOOLS="$2"
             shift 2
             ;;
+        --code-executor)
+            CODE_EXECUTOR="$2"
+            shift 2
+            ;;
         --debug)
             DEBUG_MODE="true"
             shift 1
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>] [--enable-tools <true|false>] [--debug]"
+            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>] [--enable-tools <true|false>] [--code-executor <sandbox|local>] [--debug]"
             exit 1
             ;;
     esac
@@ -75,6 +80,9 @@ if [[ -n "${MAX_CONCURRENT}" ]]; then
 fi
 if [[ -n "${ENABLE_TOOLS}" ]]; then
     echo "Using ENABLE_TOOLS: ${ENABLE_TOOLS}"
+fi
+if [[ -n "${CODE_EXECUTOR}" ]]; then
+    echo "Using CODE_EXECUTOR: ${CODE_EXECUTOR}"
 fi
 if [[ -n "${DEBUG_MODE}" ]]; then
     echo "DEBUG_MODE: enabled (container will stay alive after evaluation)"
@@ -188,6 +196,11 @@ if [[ "${RANK}" == "0" ]]; then
     # 如果指定了 enable-tools，添加该参数
     if [[ -n "${ENABLE_TOOLS}" ]]; then
         HAL_EVAL_CMD="${HAL_EVAL_CMD} -A enable_tools=${ENABLE_TOOLS}"
+    fi
+    
+    # 如果指定了 code-executor，添加该参数
+    if [[ -n "${CODE_EXECUTOR}" ]]; then
+        HAL_EVAL_CMD="${HAL_EVAL_CMD} -A code_executor=${CODE_EXECUTOR}"
     fi
     
     # 执行评测
