@@ -85,7 +85,7 @@ apt-get update && apt-get install -y rclone
 pip install qwen_vl_utils ijson
 wget "http://yum.tbsite.net/aliyun-pypi/packages/py-vipserver/py_vipserver-0.0.3-py3-none-any.whl#sha256=bfc2fd439b6b64e874bd45eeb0a525f7ca337f7406e3ceb23ece834c7ca049b9" -O py_vipserver-0.0.3-py3-none-any.whl
 pip install py_vipserver-0.0.3-py3-none-any.whl
-wget "http://yum.tbsite.net/aliyun-pypi/packages/iagent-adk/iagent_adk-1.1.8-py3-none-any.whl#sha256=dbd7b32311129c2ea10cb87629dade85a45afcc46a9399c5b481986decdecf54" -O iagent_adk-1.1.8-py3-none-any.whl
+wget "http://yum.tbsite.net/aliyun-pypi/packages/iagent-adk/iagent_adk-1.1.8-py3-none-any.whl#sha256=5723b5d8e19f3c0dd65345422ece2f4cacf5ac92df592623037fa4cf5529e74a" -O iagent_adk-1.1.8-py3-none-any.whl
 pip install iagent_adk-1.1.8-py3-none-any.whl
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
