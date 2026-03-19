@@ -3,6 +3,7 @@ import sys
 import tempfile
 import types
 import unittest
+import base64
 from pathlib import Path
 from unittest.mock import patch
 
@@ -245,6 +246,24 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertTrue(eval_results["2"]["correct"])
         self.assertEqual(metrics["accuracy"], 1.0)
         self.assertEqual(metrics["domain_accuracy"]["knowledge"], 1.0)
+
+    def test_hrbench_base64_image_is_materialized(self) -> None:
+        encoded_image = base64.b64encode(b"fake-jpeg-bytes" * 20).decode("ascii")
+        parsed = parse_hrbench_row(
+            {
+                "id": "2b",
+                "question": "Pick the best answer.",
+                "A": "North",
+                "B": "South",
+                "answer": "B",
+                "image": encoded_image,
+            },
+            0,
+            "hrbench4k",
+        )
+
+        self.assertEqual(parsed["task"]["file_name"], "images/2b_0.png")
+        self.assertIn("images/2b_0.png", parsed["task"]["files"])
 
     def test_hrbench_load_uses_version_split_config(self) -> None:
         fake_rows = [{"id": "2", "question": "Q", "answer": "A"}]
