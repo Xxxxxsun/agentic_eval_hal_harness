@@ -9,6 +9,7 @@ MAX_TASKS=""
 NUM_SAMPLES=""
 MAX_CONCURRENT=""
 ENABLE_TOOLS=""
+DEBUG_MODE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -36,9 +37,13 @@ while [[ $# -gt 0 ]]; do
             ENABLE_TOOLS="$2"
             shift 2
             ;;
+        --debug)
+            DEBUG_MODE="true"
+            shift 1
+            ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>] [--enable-tools <true|false>]"
+            echo "Usage: $0 --model-name <model_name> --benchmark <benchmark_name> [--max-tasks <num>] [--num-samples <num>] [--max-concurrent <num>] [--enable-tools <true|false>] [--debug]"
             exit 1
             ;;
     esac
@@ -70,6 +75,9 @@ if [[ -n "${MAX_CONCURRENT}" ]]; then
 fi
 if [[ -n "${ENABLE_TOOLS}" ]]; then
     echo "Using ENABLE_TOOLS: ${ENABLE_TOOLS}"
+fi
+if [[ -n "${DEBUG_MODE}" ]]; then
+    echo "DEBUG_MODE: enabled (container will stay alive after evaluation)"
 fi
 
 # 安装依赖
@@ -185,9 +193,15 @@ if [[ "${RANK}" == "0" ]]; then
     # 执行评测
     eval ${HAL_EVAL_CMD}
     
-    # 评测完成后，保持容器运行便于调试
-    echo "Evaluation completed. Keeping container alive for debugging..."
-    wait ${VLLM_PID}
+    # 评测完成后的处理
+    if [[ -n "${DEBUG_MODE}" ]]; then
+        echo "Evaluation completed. Debug mode enabled, keeping container alive..."
+        wait ${VLLM_PID}
+    else
+        echo "Evaluation completed. Shutting down vLLM server..."
+        kill ${VLLM_PID} 2>/dev/null
+        wait ${VLLM_PID} 2>/dev/null
+    fi
     
 else
     # Worker 节点：加入 Ray 集群并保持运行
