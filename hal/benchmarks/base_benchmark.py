@@ -240,7 +240,7 @@ class BaseBenchmark(ABC):
             num_samples: Number of samples per task
 
         Returns:
-            Dictionary with avg@N, pass@N, and averaged tool call metrics per round
+            Dictionary with avg@N, pass@N, per-sample tool call metrics, and sandbox error type distribution
         """
         task_avg_scores = []
         task_pass_scores = []
@@ -316,26 +316,26 @@ class BaseBenchmark(ABC):
             overall_avg = 0.0
             overall_pass = 0.0
 
-        # Calculate averaged tool call metrics per round (average across all rounds)
+        # Calculate per-sample averaged tool call metrics
+        # Each sample = one (task, round) pair; total = num_rounds * num_tasks
         num_rounds = len(per_round_stats)
-        if num_rounds > 0:
-            avg_tool_calls_per_round = sum(
-                s["tool_calls"] for s in per_round_stats.values()
-            ) / num_rounds
-            avg_successful_tool_calls_per_round = sum(
-                s["successful_tool_calls"] for s in per_round_stats.values()
-            ) / num_rounds
-            avg_failed_tool_calls_per_round = sum(
-                s["failed_tool_calls"] for s in per_round_stats.values()
-            ) / num_rounds
-            avg_tasks_with_tool_calls_per_round = sum(
-                s["tasks_with_tool_calls"] for s in per_round_stats.values()
-            ) / num_rounds
+        num_tasks = len(task_avg_scores)
+        total_samples = num_rounds * num_tasks
+        if total_samples > 0:
+            total_tool_calls_all = sum(s["tool_calls"] for s in per_round_stats.values())
+            total_successful_all = sum(s["successful_tool_calls"] for s in per_round_stats.values())
+            total_failed_all = sum(s["failed_tool_calls"] for s in per_round_stats.values())
+            total_with_tool_calls = sum(s["tasks_with_tool_calls"] for s in per_round_stats.values())
+
+            avg_tool_calls_per_sample = total_tool_calls_all / total_samples
+            avg_successful_tool_calls_per_sample = total_successful_all / total_samples
+            avg_failed_tool_calls_per_sample = total_failed_all / total_samples
+            tool_call_usage_rate_per_sample = total_with_tool_calls / total_samples
         else:
-            avg_tool_calls_per_round = 0.0
-            avg_successful_tool_calls_per_round = 0.0
-            avg_failed_tool_calls_per_round = 0.0
-            avg_tasks_with_tool_calls_per_round = 0.0
+            avg_tool_calls_per_sample = 0.0
+            avg_successful_tool_calls_per_sample = 0.0
+            avg_failed_tool_calls_per_sample = 0.0
+            tool_call_usage_rate_per_sample = 0.0
 
         # Aggregate sandbox error type counts across all rounds (overall)
         overall_sandbox_error_type_counts: Dict[str, int] = {}
@@ -353,10 +353,10 @@ class BaseBenchmark(ABC):
             f"pass@{num_samples}": overall_pass,
             "num_samples": num_samples,
             "num_tasks": len(task_avg_scores),
-            "avg_tool_calls_per_round": avg_tool_calls_per_round,
-            "avg_successful_tool_calls_per_round": avg_successful_tool_calls_per_round,
-            "avg_failed_tool_calls_per_round": avg_failed_tool_calls_per_round,
-            "avg_tasks_with_tool_calls_per_round": avg_tasks_with_tool_calls_per_round,
+            "avg_tool_calls_per_sample": avg_tool_calls_per_sample,
+            "avg_successful_tool_calls_per_sample": avg_successful_tool_calls_per_sample,
+            "avg_failed_tool_calls_per_sample": avg_failed_tool_calls_per_sample,
+            "tool_call_usage_rate_per_sample": tool_call_usage_rate_per_sample,
             "sandbox_error_type_counts": overall_sandbox_error_type_counts,
             "per_round_sandbox_error_type_counts": per_round_sandbox_error_type_counts,
             "per_task_details": per_task_details,
