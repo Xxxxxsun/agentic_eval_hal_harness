@@ -150,6 +150,24 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertEqual(metrics["accuracy"], 1.0)
         self.assertEqual(metrics["category_accuracy"]["multi_choice"], 1.0)
 
+    def test_vstar_row_uses_hf_endpoint_for_url_fallback(self) -> None:
+        _LOCAL_ASSET_PATH_CACHE.clear()
+        with patch.dict(os.environ, {"HF_ENDPOINT": "https://hf-mirror.com"}, clear=False):
+            parsed = parse_vstar_row(
+                {
+                    "id": "1",
+                    "text": "Which option is correct?",
+                    "answer": "B",
+                    "image": "direct_attributes/sa_4690.jpg",
+                },
+                0,
+            )
+
+        self.assertEqual(
+            parsed["task"]["image_url"],
+            "https://hf-mirror.com/datasets/craigwu/vstar_bench/resolve/main/direct_attributes/sa_4690.jpg",
+        )
+
     def test_hrbench_row_parsing_and_metrics(self) -> None:
         parsed = parse_hrbench_row(
             {
