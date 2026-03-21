@@ -717,12 +717,16 @@ class BenchmarkIntegrationTests(unittest.TestCase):
 
         with patch.dict(
             os.environ,
-            {"VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES": "10000000"},
+            {
+                "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES": "10000000",
+                "VQA_AGENT_HRBENCH_LOCAL_VLLM_TARGET_SIZE": "-1",
+            },
             clear=False,
         ):
             content_part = vqa_runtime._image_ref_to_content_part(
                 str(large_image_path),
                 "hrbench4k",
+                model_mode="local",
             )
 
         data_url = content_part["image_url"]["url"]
@@ -745,12 +749,14 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                 "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES": "3000",
                 "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MIN_EDGE": "100",
                 "VQA_AGENT_HRBENCH_LOCAL_IMAGE_RESIZE_FACTOR": "0.7",
+                "VQA_AGENT_HRBENCH_LOCAL_VLLM_TARGET_SIZE": "-1",
             },
             clear=False,
         ):
             content_part = vqa_runtime._image_ref_to_content_part(
                 str(large_image_path),
                 "hrbench4k",
+                model_mode="local",
             )
 
         data_url = content_part["image_url"]["url"]
@@ -776,6 +782,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             content_part = vqa_runtime._image_ref_to_content_part(
                 str(large_image_path),
                 "mathvista",
+                model_mode="local",
             )
 
         data_url = content_part["image_url"]["url"]
@@ -783,6 +790,34 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         decoded = base64.b64decode(encoded)
         restored = vqa_runtime.Image.open(io.BytesIO(decoded))
         self.assertEqual(restored.size, (1600, 900))
+
+    def test_hrbench_local_mode_uses_default_target_size(self) -> None:
+        if vqa_runtime.Image is None:
+            self.skipTest("Pillow is not available")
+
+        large_image_path = Path(self.temp_dir.name) / "large-default-target.png"
+        image = vqa_runtime.Image.new("RGB", (2400, 1800), color="green")
+        image.save(large_image_path)
+
+        with patch.dict(
+            os.environ,
+            {
+                "VQA_AGENT_HRBENCH_LOCAL_VLLM_TARGET_SIZE": "1024",
+                "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES": "10000000",
+            },
+            clear=False,
+        ):
+            content_part = vqa_runtime._image_ref_to_content_part(
+                str(large_image_path),
+                "hrbench4k",
+                model_mode="local",
+            )
+
+        data_url = content_part["image_url"]["url"]
+        encoded = data_url.split(",", 1)[1]
+        decoded = base64.b64decode(encoded)
+        restored = vqa_runtime.Image.open(io.BytesIO(decoded))
+        self.assertLessEqual(max(restored.size), 1024)
 
     def test_benchmark_manager_registration(self) -> None:
         manager = BenchmarkManager(agent_dir="agents", config={})
