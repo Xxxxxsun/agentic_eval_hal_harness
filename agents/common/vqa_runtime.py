@@ -319,7 +319,11 @@ def _serialize_image_bytes(
     return "image/jpeg", buffer.getvalue()
 
 
-def _prepare_local_image_payload(image_path: Path, benchmark_name: str) -> Tuple[str, bytes]:
+def _prepare_local_image_payload(
+    image_path: Path,
+    benchmark_name: str,
+    model_mode: Optional[str] = None,
+) -> Tuple[str, bytes]:
     if not _should_resize_local_image(benchmark_name):
         mime_type = _guess_mime_type(str(image_path))
         return mime_type, image_path.read_bytes()
@@ -328,9 +332,16 @@ def _prepare_local_image_payload(image_path: Path, benchmark_name: str) -> Tuple
         mime_type = _guess_mime_type(str(image_path))
         return mime_type, image_path.read_bytes()
 
+    default_target_size = -1
+    if model_mode == "local":
+        default_target_size = _read_int_env(
+            "VQA_AGENT_HRBENCH_LOCAL_VLLM_TARGET_SIZE",
+            1024,
+        )
+
     initial_target_size = _read_int_env(
         "VQA_AGENT_HRBENCH_LOCAL_IMAGE_TARGET_SIZE",
-        _read_int_env("VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_EDGE", -1),
+        _read_int_env("VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_EDGE", default_target_size),
     )
     max_payload_bytes = _read_int_env(
         "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES",
@@ -388,12 +399,20 @@ def _prepare_local_image_payload(image_path: Path, benchmark_name: str) -> Tuple
         return mime_type, image_path.read_bytes()
 
 
-def _image_ref_to_content_part(image_ref: str, benchmark_name: str) -> Dict[str, Any]:
+def _image_ref_to_content_part(
+    image_ref: str,
+    benchmark_name: str,
+    model_mode: Optional[str] = None,
+) -> Dict[str, Any]:
     if image_ref.startswith(("http://", "https://")):
         return {"type": "image_url", "image_url": {"url": image_ref}}
 
     image_path = Path(image_ref)
-    mime_type, image_bytes = _prepare_local_image_payload(image_path, benchmark_name)
+    mime_type, image_bytes = _prepare_local_image_payload(
+        image_path,
+        benchmark_name,
+        model_mode=model_mode,
+    )
     encoded = base64.b64encode(image_bytes).decode("ascii")
     return {
         "type": "image_url",
@@ -424,6 +443,7 @@ def _build_user_content(
     task_data: Dict[str, Any],
     include_image: bool,
     benchmark_name: str,
+    model_mode: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], str, Dict[str, str], List[str]]:
     question = _extract_question(task_data)
     choices = _extract_choices(task_data)
@@ -432,7 +452,7 @@ def _build_user_content(
 
     content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
     for image_ref in image_refs:
-        content.append(_image_ref_to_content_part(image_ref, benchmark_name))
+        content.append(_image_ref_to_content_part(image_ref, benchmark_name, model_mode=model_mode))
     return content, question, choices, image_refs
 
 
@@ -578,10 +598,12 @@ def _solve_single_channel(
     api_key: Optional[str] = None,
     **kwargs: Any,
 ) -> Tuple[str, Dict[str, Any]]:
+    mode = _get_model_mode(**kwargs)
     user_content, question, _, image_refs = _build_user_content(
         task_data,
         include_image=include_image,
         benchmark_name=benchmark_name,
+        model_mode=mode,
     )
     _debug_log(
         task_id,
@@ -599,7 +621,6 @@ def _solve_single_channel(
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_content},
     ]
-    mode = _get_model_mode(**kwargs)
     max_iterations = int(kwargs.get("max_iterations", 8))
 
     conversation_history: List[Dict[str, Any]] = []
