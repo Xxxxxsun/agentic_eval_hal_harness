@@ -477,6 +477,35 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         )
         self.assertIn("Missing required MMStar answer channels", missing_channel["mm_1"]["error"])
 
+    def test_mmstar_falls_back_to_choice_label_extraction_without_choices(self) -> None:
+        rows = [
+            {
+                "index": "mm_label_only",
+                "question": "Choose the correct option.",
+                "answer": "A",
+                "category": "perception",
+                "image": self.image_path,
+            }
+        ]
+
+        with patch.object(MMStarBenchmark, "_load_dataset_rows", return_value=rows):
+            benchmark = MMStarBenchmark("agents", {})
+
+        eval_results = benchmark.evaluate_output(
+            {
+                "mm_label_only": {
+                    "vision_answer": "Long reasoning here. Final answer: A",
+                    "no_image_answer": "Long reasoning here. Final answer: B",
+                    "base_llm_answer": "Long reasoning here. Final answer: C",
+                }
+            },
+            "run",
+        )
+
+        self.assertTrue(eval_results["mm_label_only"]["vision_correct"])
+        self.assertEqual(eval_results["mm_label_only"]["vision_predicted"], "A")
+        self.assertFalse(eval_results["mm_label_only"]["no_image_correct"])
+
     def test_vqa_agent_without_tools_matches_plain_behavior(self) -> None:
         with patch(
             "agents.common.vqa_runtime._invoke_completion",

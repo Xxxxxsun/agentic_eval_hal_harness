@@ -5,8 +5,10 @@ from ._benchmark_utils import (
     attach_agent_metrics,
     compute_group_accuracy,
     evaluate_choice_or_text_response,
+    extract_choice_answer,
     extract_choices_from_row,
     extract_serializable_metadata,
+    normalize_text,
     pick_first,
     prepare_task_media,
     summarize_tool_metrics,
@@ -17,6 +19,28 @@ logger = logging.getLogger(__name__)
 
 BREAKDOWN_FIELDS = ("category", "l2_category", "domain", "source")
 REQUIRED_OUTPUT_FIELDS = ("vision_answer", "no_image_answer", "base_llm_answer")
+
+
+def _evaluate_mmstar_channel(
+    response: Any,
+    gold_answer: Any,
+    choices: Dict[str, str],
+) -> tuple[bool, str]:
+    is_correct, predicted = evaluate_choice_or_text_response(
+        response,
+        gold_answer,
+        choices=choices,
+    )
+    if choices or is_correct:
+        return is_correct, predicted
+
+    normalized_gold = normalize_text(gold_answer).upper().strip("()[]{}")
+    if len(normalized_gold) == 1 and normalized_gold.isalpha():
+        predicted_label = extract_choice_answer(response)
+        if predicted_label:
+            return predicted_label == normalized_gold, predicted_label
+
+    return is_correct, predicted
 
 
 def parse_mmstar_row(row: Dict[str, Any], row_idx: int) -> Dict[str, Any]:
@@ -138,20 +162,20 @@ class MMStarBenchmark(BaseBenchmark):
                 results[task_id] = result_entry
                 continue
 
-            vision_correct, vision_predicted = evaluate_choice_or_text_response(
+            vision_correct, vision_predicted = _evaluate_mmstar_channel(
                 raw_task_output["vision_answer"],
                 task["answer"],
-                choices=task.get("choices"),
+                choices=task.get("choices") or {},
             )
-            no_image_correct, no_image_predicted = evaluate_choice_or_text_response(
+            no_image_correct, no_image_predicted = _evaluate_mmstar_channel(
                 raw_task_output["no_image_answer"],
                 task["answer"],
-                choices=task.get("choices"),
+                choices=task.get("choices") or {},
             )
-            base_llm_correct, base_llm_predicted = evaluate_choice_or_text_response(
+            base_llm_correct, base_llm_predicted = _evaluate_mmstar_channel(
                 raw_task_output["base_llm_answer"],
                 task["answer"],
-                choices=task.get("choices"),
+                choices=task.get("choices") or {},
             )
 
             result_entry = {
