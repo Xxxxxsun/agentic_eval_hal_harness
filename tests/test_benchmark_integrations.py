@@ -4,6 +4,7 @@ import tempfile
 import types
 import unittest
 import base64
+import io
 from pathlib import Path
 from unittest.mock import patch
 
@@ -92,6 +93,7 @@ from hal.benchmarks._benchmark_utils import (
 )
 from hal.benchmarks.vstar_bench import VStarBenchBenchmark, parse_vstar_row
 from agents.common.vqa_runtime import run_vqa_agent
+from agents.common import vqa_runtime
 
 
 class _FakeToolFunction:
@@ -647,6 +649,111 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(eval_results["1"]["sandbox_error_types"], ["ValueError"])
+
+    def test_local_vqa_completion_defaults_max_tokens(self) -> None:
+        captured = {}
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return _FakeResponse("stop", _FakeMessage(content="ok"))
+
+        class _FakeChat:
+            def __init__(self):
+                self.completions = _FakeCompletions()
+
+        class _FakeClient:
+            def __init__(self):
+                self.chat = _FakeChat()
+
+        with patch(
+            "agents.common.vqa_runtime.create_openai_client",
+            return_value=(_FakeClient(), "resolved-model"),
+        ):
+            response = vqa_runtime._invoke_completion(
+                messages=[{"role": "user", "content": "hi"}],
+                model_name="test-model",
+            )
+
+        self.assertIsNotNone(response)
+        self.assertEqual(captured["max_tokens"], 1024)
+
+    def test_hrbench_local_image_payload_keeps_original_size_when_under_limit(self) -> None:
+        if vqa_runtime.Image is None:
+            self.skipTest("Pillow is not available")
+
+        large_image_path = Path(self.temp_dir.name) / "large.png"
+        image = vqa_runtime.Image.new("RGB", (1200, 800), color="red")
+        image.save(large_image_path)
+
+        with patch.dict(
+            os.environ,
+            {"VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES": "10000000"},
+            clear=False,
+        ):
+            content_part = vqa_runtime._image_ref_to_content_part(
+                str(large_image_path),
+                "hrbench4k",
+            )
+
+        data_url = content_part["image_url"]["url"]
+        encoded = data_url.split(",", 1)[1]
+        decoded = base64.b64decode(encoded)
+        restored = vqa_runtime.Image.open(io.BytesIO(decoded))
+        self.assertEqual(restored.size, (1200, 800))
+
+    def test_hrbench_local_image_payload_is_downscaled_only_after_overflow(self) -> None:
+        if vqa_runtime.Image is None:
+            self.skipTest("Pillow is not available")
+
+        large_image_path = Path(self.temp_dir.name) / "large-overflow.png"
+        image = vqa_runtime.Image.new("RGB", (2048, 1024), color="red")
+        image.save(large_image_path)
+
+        with patch.dict(
+            os.environ,
+            {
+                "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES": "3000",
+                "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MIN_EDGE": "100",
+                "VQA_AGENT_HRBENCH_LOCAL_IMAGE_RESIZE_FACTOR": "0.7",
+            },
+            clear=False,
+        ):
+            content_part = vqa_runtime._image_ref_to_content_part(
+                str(large_image_path),
+                "hrbench4k",
+            )
+
+        data_url = content_part["image_url"]["url"]
+        encoded = data_url.split(",", 1)[1]
+        decoded = base64.b64decode(encoded)
+        resized = vqa_runtime.Image.open(io.BytesIO(decoded))
+        self.assertLess(max(resized.size), 2048)
+        self.assertGreaterEqual(min(resized.size), 100)
+
+    def test_non_hrbench_local_image_payload_keeps_original_size(self) -> None:
+        if vqa_runtime.Image is None:
+            self.skipTest("Pillow is not available")
+
+        large_image_path = Path(self.temp_dir.name) / "large-original.png"
+        image = vqa_runtime.Image.new("RGB", (1600, 900), color="blue")
+        image.save(large_image_path)
+
+        with patch.dict(
+            os.environ,
+            {"VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES": "3000"},
+            clear=False,
+        ):
+            content_part = vqa_runtime._image_ref_to_content_part(
+                str(large_image_path),
+                "mathvista",
+            )
+
+        data_url = content_part["image_url"]["url"]
+        encoded = data_url.split(",", 1)[1]
+        decoded = base64.b64decode(encoded)
+        restored = vqa_runtime.Image.open(io.BytesIO(decoded))
+        self.assertEqual(restored.size, (1600, 900))
 
     def test_benchmark_manager_registration(self) -> None:
         manager = BenchmarkManager(agent_dir="agents", config={})

@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import mimetypes
 import os
@@ -8,6 +9,11 @@ from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from openai import OpenAI
+
+try:  # pragma: no cover - optional dependency in some environments
+    from PIL import Image
+except ImportError:  # pragma: no cover
+    Image = None
 
 try:  # pragma: no cover - import path depends on how the agent is launched
     from model_client import _get_model_mode, chat_completion_with_tools, create_openai_client
@@ -268,14 +274,127 @@ def _guess_mime_type(path: str) -> str:
     return mime_type or "image/png"
 
 
-def _image_ref_to_content_part(image_ref: str) -> Dict[str, Any]:
+def _should_resize_local_image(benchmark_name: str) -> bool:
+    return benchmark_name in {"hrbench4k", "hrbench8k"}
+
+
+def _read_int_env(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_float_env(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        return float(raw_value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _serialize_image_bytes(
+    image: "Image.Image",
+    *,
+    prefer_png: bool,
+    jpeg_quality: int,
+) -> Tuple[str, bytes]:
+    buffer = io.BytesIO()
+    if prefer_png:
+        image.save(buffer, format="PNG", optimize=True)
+        return "image/png", buffer.getvalue()
+
+    rgb_image = image.convert("RGB")
+    rgb_image.save(
+        buffer,
+        format="JPEG",
+        quality=jpeg_quality,
+        optimize=True,
+    )
+    return "image/jpeg", buffer.getvalue()
+
+
+def _prepare_local_image_payload(image_path: Path, benchmark_name: str) -> Tuple[str, bytes]:
+    if not _should_resize_local_image(benchmark_name):
+        mime_type = _guess_mime_type(str(image_path))
+        return mime_type, image_path.read_bytes()
+
+    if Image is None:
+        mime_type = _guess_mime_type(str(image_path))
+        return mime_type, image_path.read_bytes()
+
+    initial_target_size = _read_int_env(
+        "VQA_AGENT_HRBENCH_LOCAL_IMAGE_TARGET_SIZE",
+        _read_int_env("VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_EDGE", -1),
+    )
+    max_payload_bytes = _read_int_env(
+        "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MAX_BYTES",
+        _read_int_env("VLMEVAL_MAX_IMAGE_SIZE", 3_000_000),
+    )
+    min_edge = _read_int_env(
+        "VQA_AGENT_HRBENCH_LOCAL_IMAGE_MIN_EDGE",
+        _read_int_env("VLMEVAL_MIN_IMAGE_EDGE", 100),
+    )
+    resize_factor = _read_float_env("VQA_AGENT_HRBENCH_LOCAL_IMAGE_RESIZE_FACTOR", 0.7)
+    jpeg_quality = _read_int_env(
+        "VQA_AGENT_HRBENCH_LOCAL_IMAGE_JPEG_QUALITY",
+        _read_int_env("VQA_AGENT_LOCAL_IMAGE_JPEG_QUALITY", 85),
+    )
+
+    try:
+        with Image.open(image_path) as image:
+            source_image = image.copy()
+            has_alpha = source_image.mode in ("RGBA", "LA") or (
+                source_image.mode == "P" and "transparency" in source_image.info
+            )
+
+            if initial_target_size > 0:
+                source_image.thumbnail((initial_target_size, initial_target_size))
+
+            mime_type, image_bytes = _serialize_image_bytes(
+                source_image,
+                prefer_png=has_alpha,
+                jpeg_quality=jpeg_quality,
+            )
+            if len(image_bytes) <= max_payload_bytes:
+                return mime_type, image_bytes
+
+            factor = 1.0
+            while min(source_image.size) > min_edge:
+                factor *= resize_factor
+                if factor <= 0:
+                    break
+
+                resized = source_image.copy()
+                target_width = max(int(source_image.width * factor), min_edge)
+                target_height = max(int(source_image.height * factor), min_edge)
+                resized.thumbnail((target_width, target_height))
+                mime_type, image_bytes = _serialize_image_bytes(
+                    resized,
+                    prefer_png=has_alpha,
+                    jpeg_quality=jpeg_quality,
+                )
+                if len(image_bytes) <= max_payload_bytes or min(resized.size) <= min_edge:
+                    return mime_type, image_bytes
+
+            return mime_type, image_bytes
+    except Exception:
+        mime_type = _guess_mime_type(str(image_path))
+        return mime_type, image_path.read_bytes()
+
+
+def _image_ref_to_content_part(image_ref: str, benchmark_name: str) -> Dict[str, Any]:
     if image_ref.startswith(("http://", "https://")):
         return {"type": "image_url", "image_url": {"url": image_ref}}
 
     image_path = Path(image_ref)
-    mime_type = _guess_mime_type(str(image_path))
-    with open(image_path, "rb") as handle:
-        encoded = base64.b64encode(handle.read()).decode("ascii")
+    mime_type, image_bytes = _prepare_local_image_payload(image_path, benchmark_name)
+    encoded = base64.b64encode(image_bytes).decode("ascii")
     return {
         "type": "image_url",
         "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
@@ -304,6 +423,7 @@ def _build_task_prompt(question: str, choices: Dict[str, str], include_image: bo
 def _build_user_content(
     task_data: Dict[str, Any],
     include_image: bool,
+    benchmark_name: str,
 ) -> Tuple[List[Dict[str, Any]], str, Dict[str, str], List[str]]:
     question = _extract_question(task_data)
     choices = _extract_choices(task_data)
@@ -312,7 +432,7 @@ def _build_user_content(
 
     content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
     for image_ref in image_refs:
-        content.append(_image_ref_to_content_part(image_ref))
+        content.append(_image_ref_to_content_part(image_ref, benchmark_name))
     return content, question, choices, image_refs
 
 
@@ -397,8 +517,10 @@ def _invoke_completion(
     mode = _get_model_mode(**kwargs)
     temperature = float(kwargs.get("temperature", 0.0))
     extra_params: Dict[str, Any] = {}
-    if "max_tokens" in kwargs:
-        extra_params["max_tokens"] = int(kwargs["max_tokens"])
+    if mode == "proxy":
+        pass
+    else:
+        extra_params["max_tokens"] = int(kwargs.get("max_tokens", 1024))
     if "reasoning_effort" in kwargs:
         extra_params["reasoning_effort"] = kwargs["reasoning_effort"]
 
@@ -456,7 +578,11 @@ def _solve_single_channel(
     api_key: Optional[str] = None,
     **kwargs: Any,
 ) -> Tuple[str, Dict[str, Any]]:
-    user_content, question, _, image_refs = _build_user_content(task_data, include_image=include_image)
+    user_content, question, _, image_refs = _build_user_content(
+        task_data,
+        include_image=include_image,
+        benchmark_name=benchmark_name,
+    )
     _debug_log(
         task_id,
         (
