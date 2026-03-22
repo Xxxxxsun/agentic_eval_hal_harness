@@ -5,6 +5,7 @@ import types
 import unittest
 import base64
 import io
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -133,6 +134,11 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.image_path = os.path.join(self.temp_dir.name, "sample.png")
         with open(self.image_path, "wb") as handle:
             handle.write(b"not-a-real-png")
+        self.valid_image_path = None
+        if vqa_runtime.Image is not None:
+            self.valid_image_path = os.path.join(self.temp_dir.name, "valid.png")
+            image = vqa_runtime.Image.new("RGB", (160, 120), color="white")
+            image.save(self.valid_image_path)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -607,6 +613,167 @@ class BenchmarkIntegrationTests(unittest.TestCase):
 
         self.assertEqual(
             result["task_3"]["metrics"]["sandbox_error_types"],
+            ["ValueError"],
+        )
+
+    def test_vqa_agent_with_visual_list_images_tool(self) -> None:
+        if self.valid_image_path is None:
+            self.skipTest("Pillow is not available")
+
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[_FakeToolCall("list_call", "list_images", "{}")],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="A")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_visual_1": {
+                        "question": "Which option is correct?",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                        "file_name": "images/valid.png",
+                        "files": {"images/valid.png": self.valid_image_path},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        tool_turns = [
+            turn
+            for turn in result["task_visual_1"]["metrics"]["conversation_history"]
+            if turn.get("role") == "tool"
+        ]
+        self.assertEqual(tool_turns[0]["tool_name"], "list_images")
+        self.assertEqual(tool_turns[0]["tool_payload"]["images"][0]["image_id"], "image_0")
+        self.assertEqual(result["task_visual_1"]["metrics"]["tool_call_count"], 1)
+
+    def test_vqa_agent_crop_tool_adds_followup_image_message(self) -> None:
+        if self.valid_image_path is None:
+            self.skipTest("Pillow is not available")
+
+        captured_messages = []
+
+        def _fake_invoke_completion(**kwargs):
+            captured_messages.append(kwargs["messages"])
+            if len(captured_messages) == 1:
+                return _FakeResponse(
+                    "tool_calls",
+                    _FakeMessage(
+                        content="",
+                        tool_calls=[
+                            _FakeToolCall(
+                                "crop_call",
+                                "crop_image",
+                                json.dumps(
+                                    {
+                                        "image_id": "image_0",
+                                        "left": 10,
+                                        "top": 20,
+                                        "right": 110,
+                                        "bottom": 90,
+                                    }
+                                ),
+                            )
+                        ],
+                    ),
+                )
+            return _FakeResponse("stop", _FakeMessage(content="A"))
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=_fake_invoke_completion,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_visual_2": {
+                        "question": "Inspect the cropped image.",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                        "file_name": "images/valid.png",
+                        "files": {"images/valid.png": self.valid_image_path},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="mathvista",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        tool_turns = [
+            turn
+            for turn in result["task_visual_2"]["metrics"]["conversation_history"]
+            if turn.get("role") == "tool"
+        ]
+        self.assertEqual(tool_turns[0]["tool_name"], "crop_image")
+        self.assertEqual(tool_turns[0]["tool_payload"]["width"], 100)
+        self.assertEqual(tool_turns[0]["tool_payload"]["height"], 70)
+        second_call_messages = captured_messages[1]
+        followup_user_message = next(
+            message
+            for message in second_call_messages
+            if message.get("role") == "user"
+            and isinstance(message.get("content"), list)
+            and len(message["content"]) > 1
+            and "A derived image was created by a visual tool" in message["content"][0].get("text", "")
+        )
+        self.assertEqual(followup_user_message["role"], "user")
+        self.assertIn("image_id=image_1", followup_user_message["content"][0]["text"])
+        self.assertEqual(followup_user_message["content"][1]["type"], "image_url")
+
+    def test_vqa_agent_visual_tool_without_images_returns_error(self) -> None:
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "crop_missing",
+                            "crop_image",
+                            json.dumps(
+                                {
+                                    "image_id": "image_0",
+                                    "left": 0,
+                                    "top": 0,
+                                    "right": 10,
+                                    "bottom": 10,
+                                }
+                            ),
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="fallback")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {"task_visual_3": {"question": "There is no image here."}},
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        self.assertEqual(
+            result["task_visual_3"]["metrics"]["sandbox_error_types"],
             ["ValueError"],
         )
 

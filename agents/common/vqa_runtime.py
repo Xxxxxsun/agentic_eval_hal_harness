@@ -140,35 +140,20 @@ try:  # pragma: no cover - import path depends on how the agent is launched
 except ImportError:  # pragma: no cover - exercised in unit tests
     from agents.common.sandbox_executor import LocalPythonExecutor, SandboxManager
 
+try:  # pragma: no cover - import path depends on how the agent is launched
+    from common.vqa_mcp_tools import VQAImageSession, VQAToolRegistry
+except ImportError:  # pragma: no cover - exercised in unit tests
+    from agents.common.vqa_mcp_tools import VQAImageSession, VQAToolRegistry
+
 
 SYSTEM_PROMPT = (
     "You are solving multimodal benchmark questions. "
     "Use the execute_python tool when calculations, counting, geometry, "
     "unit conversion, or numerical verification would help. "
+    "You can also use visual tools to list images, inspect image metadata, crop, zoom, "
+    "or resize images when local details, small text, charts, or spatial relationships matter. "
     "Keep the final answer concise and follow the user prompt's answer format."
 )
-
-PYTHON_EXECUTION_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "execute_python",
-        "description": (
-            "Execute Python code in a persistent interpreter. "
-            "Use this to verify calculations, count objects, manipulate numbers, "
-            "solve equations, or check candidate answers."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "code": {
-                    "type": "string",
-                    "description": "The Python code to execute. Print any values you want to inspect.",
-                }
-            },
-            "required": ["code"],
-        },
-    },
-}
 
 
 def _normalize_text(value: Any) -> str:
@@ -627,14 +612,17 @@ def _solve_single_channel(
     tool_call_count = 0
     sandbox_error_types: List[str] = []
     executor = _create_code_executor(code_executor, sandbox_url) if enable_tools else None
+    image_session = VQAImageSession(task_id)
     final_answer = ""
 
     try:
+        image_session.register_initial_images(image_refs)
+        tool_registry = VQAToolRegistry(executor, image_session) if enable_tools else None
         for iteration in range(max_iterations):
             raw_response = _invoke_completion(
                 messages=messages,
                 model_name=model_name,
-                tools=[PYTHON_EXECUTION_TOOL] if enable_tools else None,
+                tools=tool_registry.get_tool_schemas() if enable_tools and tool_registry else None,
                 api_base_url=api_base_url,
                 api_key=api_key,
                 **kwargs,
@@ -678,30 +666,35 @@ def _solve_single_channel(
                 break
 
             for tool_call in tool_calls:
-                if tool_call.function.name != "execute_python":
-                    continue
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
                 except json.JSONDecodeError:
-                    arguments = {"code": ""}
+                    arguments = {}
 
-                code = str(arguments.get("code", ""))
-                execution_result = executor.execute_code(code)
+                execution_result = tool_registry.execute_tool(
+                    tool_call.function.name,
+                    arguments,
+                )
                 tool_call_count += 1
                 error_type = execution_result.get("error_type")
                 if error_type:
                     sandbox_error_types.append(error_type)
 
                 tool_output = str(execution_result.get("output", "(No output)"))
+                tool_record: Dict[str, Any] = {
+                    "iteration": iteration,
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "tool_name": tool_call.function.name,
+                    "arguments": arguments,
+                    "result": tool_output,
+                    "error_type": error_type,
+                }
+                tool_payload = execution_result.get("tool_payload")
+                if isinstance(tool_payload, dict):
+                    tool_record["tool_payload"] = tool_payload
                 conversation_history.append(
-                    {
-                        "iteration": iteration,
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "code": code,
-                        "result": tool_output,
-                        "error_type": error_type,
-                    }
+                    tool_record
                 )
                 messages.append(
                     {
@@ -710,6 +703,29 @@ def _solve_single_channel(
                         "content": tool_output,
                     }
                 )
+                generated_image_path = execution_result.get("generated_image_path")
+                generated_image_id = execution_result.get("generated_image_id")
+                if generated_image_path and generated_image_id:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        "A derived image was created by a visual tool. "
+                                        f"It is available as image_id={generated_image_id}. "
+                                        "You may inspect it in subsequent reasoning."
+                                    ),
+                                },
+                                _image_ref_to_content_part(
+                                    str(generated_image_path),
+                                    benchmark_name,
+                                    model_mode=mode,
+                                ),
+                            ],
+                        }
+                    )
         return final_answer, {
             "tool_call_count": tool_call_count,
             "conversation_history": conversation_history,
@@ -719,6 +735,7 @@ def _solve_single_channel(
     finally:
         if executor is not None:
             executor.destroy()
+        image_session.destroy()
 
 
 def _merge_channel_metrics(channel_metrics: Iterable[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
