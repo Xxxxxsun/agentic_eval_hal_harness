@@ -616,6 +616,43 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             ["ValueError"],
         )
 
+    def test_vqa_agent_forces_direct_answer_after_tool_iterations_exhausted(self) -> None:
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall("call_loop", "execute_python", '{"code": "print(1)"}')
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="A")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_force_answer": {
+                        "question": "Which option is correct?",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+                max_iterations=1,
+            )
+
+        self.assertEqual(result["task_force_answer"]["answer"], "A")
+        history = result["task_force_answer"]["metrics"]["conversation_history"]
+        self.assertEqual(history[-1]["content"], "A")
+
     def test_vqa_agent_with_visual_list_images_tool(self) -> None:
         if self.valid_image_path is None:
             self.skipTest("Pillow is not available")
