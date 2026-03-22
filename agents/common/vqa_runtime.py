@@ -316,6 +316,16 @@ def _guess_mime_type(path: str) -> str:
     return mime_type or "image/png"
 
 
+def _uses_claude_proxy_plain_base64(
+    model_mode: Optional[str],
+    model_name: Optional[str],
+) -> bool:
+    if model_mode != "proxy":
+        return False
+    normalized_model = (model_name or "").strip().lower()
+    return normalized_model.startswith("claude")
+
+
 def _should_resize_local_image(benchmark_name: str) -> bool:
     return benchmark_name in {"hrbench4k", "hrbench8k"}
 
@@ -361,12 +371,21 @@ def _serialize_image_bytes(
     return "image/jpeg", buffer.getvalue()
 
 
-def _remote_image_ref_to_content_part(image_ref: str) -> Dict[str, Any]:
+def _remote_image_ref_to_content_part(
+    image_ref: str,
+    *,
+    use_plain_base64: bool = False,
+) -> Dict[str, Any]:
     with urllib.request.urlopen(image_ref, timeout=30) as response:
         image_bytes = response.read()
         mime_type = response.headers.get_content_type()
 
     encoded = base64.b64encode(image_bytes).decode("ascii")
+    if use_plain_base64:
+        return {
+            "type": "image_url",
+            "image_url": {"url": encoded},
+        }
     return {
         "type": "image_url",
         "image_url": {"url": f"data:{mime_type or _guess_mime_type(image_ref)};base64,{encoded}"},
@@ -457,11 +476,16 @@ def _image_ref_to_content_part(
     image_ref: str,
     benchmark_name: str,
     model_mode: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> Dict[str, Any]:
+    use_plain_base64 = _uses_claude_proxy_plain_base64(model_mode, model_name)
     if image_ref.startswith(("http://", "https://")):
         if model_mode == "proxy":
             try:
-                return _remote_image_ref_to_content_part(image_ref)
+                return _remote_image_ref_to_content_part(
+                    image_ref,
+                    use_plain_base64=use_plain_base64,
+                )
             except Exception:
                 pass
         return {"type": "image_url", "image_url": {"url": image_ref}}
@@ -473,6 +497,11 @@ def _image_ref_to_content_part(
         model_mode=model_mode,
     )
     encoded = base64.b64encode(image_bytes).decode("ascii")
+    if use_plain_base64:
+        return {
+            "type": "image_url",
+            "image_url": {"url": encoded},
+        }
     return {
         "type": "image_url",
         "image_url": {"url": f"data:{mime_type};base64,{encoded}"},
@@ -508,6 +537,7 @@ def _build_user_content(
     include_image: bool,
     benchmark_name: str,
     model_mode: Optional[str] = None,
+    model_name: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], str, Dict[str, str], List[str]]:
     question = _extract_question(task_data)
     choices = _extract_choices(task_data)
@@ -516,7 +546,14 @@ def _build_user_content(
 
     content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
     for image_ref in image_refs:
-        content.append(_image_ref_to_content_part(image_ref, benchmark_name, model_mode=model_mode))
+        content.append(
+            _image_ref_to_content_part(
+                image_ref,
+                benchmark_name,
+                model_mode=model_mode,
+                model_name=model_name,
+            )
+        )
     return content, question, choices, image_refs
 
 
@@ -695,6 +732,7 @@ def _solve_single_channel(
         include_image=include_image,
         benchmark_name=benchmark_name,
         model_mode=mode,
+        model_name=model_name,
     )
     _debug_log(
         task_id,
@@ -833,6 +871,7 @@ def _solve_single_channel(
                                     str(generated_image_path),
                                     benchmark_name,
                                     model_mode=mode,
+                                    model_name=model_name,
                                 ),
                             ],
                         }
