@@ -347,6 +347,14 @@ def _uses_claude_proxy_plain_base64(
     return normalized_model.startswith("claude")
 
 
+def _is_claude_proxy_model(
+    model_mode: Optional[str],
+    model_name: Optional[str],
+) -> bool:
+    normalized_model = (model_name or "").strip().lower()
+    return model_mode == "proxy" and normalized_model.startswith("claude")
+
+
 def _should_resize_local_image(benchmark_name: str) -> bool:
     return benchmark_name in {"hrbench4k", "hrbench8k"}
 
@@ -780,22 +788,45 @@ def _solve_single_channel(
     image_session = VQAImageSession(task_id)
     final_answer = ""
     exhausted_tool_iterations = False
+    empty_answer_retry_limit = int(kwargs.get("empty_answer_retries", 1))
 
     try:
         image_session.register_initial_images(image_refs)
         tool_registry = VQAToolRegistry(executor, image_session) if enable_tools else None
         for iteration in range(max_iterations):
-            raw_response = _invoke_completion(
-                messages=messages,
-                model_name=model_name,
-                tools=tool_registry.get_tool_schemas() if enable_tools and tool_registry else None,
-                api_base_url=api_base_url,
-                api_key=api_key,
-                **kwargs,
-            )
-            finish_reason, assistant_message, thinking_content = _normalize_model_response(
-                raw_response, mode, iteration
-            )
+            attempt = 0
+            raw_response = None
+            finish_reason = "stop"
+            assistant_message = SimpleNamespace(content="", tool_calls=None, role="assistant")
+            thinking_content = None
+            while True:
+                raw_response = _invoke_completion(
+                    messages=messages,
+                    model_name=model_name,
+                    tools=tool_registry.get_tool_schemas() if enable_tools and tool_registry else None,
+                    api_base_url=api_base_url,
+                    api_key=api_key,
+                    **kwargs,
+                )
+                finish_reason, assistant_message, thinking_content = _normalize_model_response(
+                    raw_response, mode, iteration
+                )
+                if (
+                    enable_tools
+                    or attempt >= empty_answer_retry_limit
+                    or not _is_claude_proxy_model(mode, model_name)
+                    or _normalize_text(getattr(assistant_message, "content", ""))
+                ):
+                    break
+                attempt += 1
+                _debug_log(
+                    task_id,
+                    (
+                        "empty answer from Claude proxy without tools; "
+                        f"retrying request attempt={attempt}/{empty_answer_retry_limit}"
+                    ),
+                    debug,
+                )
             current_content = assistant_message.content or ""
             tool_calls = getattr(assistant_message, "tool_calls", None)
             if enable_tools and tool_calls:
