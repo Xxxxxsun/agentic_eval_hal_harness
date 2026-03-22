@@ -1319,6 +1319,56 @@ class BenchmarkIntegrationTests(unittest.TestCase):
 
         self.assertTrue(content_part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
 
+    def test_proxy_remote_image_payload_uses_plain_base64_for_claude(self) -> None:
+        class _FakeHeaders:
+            @staticmethod
+            def get_content_type() -> str:
+                return "image/jpeg"
+
+        class _FakeResponse:
+            headers = _FakeHeaders()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return b"fake-remote-image"
+
+        with patch(
+            "agents.common.vqa_runtime.urllib.request.urlopen",
+            return_value=_FakeResponse(),
+        ):
+            content_part = vqa_runtime._image_ref_to_content_part(
+                "https://example.com/test.jpg",
+                "vstar_bench",
+                model_mode="proxy",
+                model_name="claude-opus-4-6",
+            )
+
+        self.assertEqual(
+            content_part["image_url"]["url"],
+            base64.b64encode(b"fake-remote-image").decode("ascii"),
+        )
+
+    def test_proxy_local_image_payload_uses_plain_base64_for_claude(self) -> None:
+        if self.valid_image_path is None:
+            self.skipTest("Pillow is not available")
+
+        content_part = vqa_runtime._image_ref_to_content_part(
+            self.valid_image_path,
+            "vstar_bench",
+            model_mode="proxy",
+            model_name="claude-opus-4-6",
+        )
+
+        self.assertFalse(content_part["image_url"]["url"].startswith("data:"))
+        decoded = base64.b64decode(content_part["image_url"]["url"])
+        self.assertGreater(len(decoded), 0)
+
     def test_vqa_prompt_allows_reasoning_and_requires_final_answer_line(self) -> None:
         prompt = vqa_runtime._build_task_prompt(
             "What is 1+1?",
