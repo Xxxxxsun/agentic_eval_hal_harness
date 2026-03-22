@@ -1,5 +1,6 @@
 import base64
 import binascii
+from collections import Counter
 import json
 import os
 import re
@@ -494,8 +495,12 @@ def attach_agent_metrics(result_entry: Dict[str, Any], raw_task_data: Any) -> No
 
     successful_tool_calls = 0
     failed_tool_calls = 0
+    tool_usage_by_name: Counter[str] = Counter()
     for turn in conversation_history:
         if turn.get("role") == "tool" and "result" in turn:
+            tool_name = turn.get("tool_name")
+            if tool_name:
+                tool_usage_by_name[str(tool_name)] += 1
             result_text = str(turn.get("result", ""))
             if "error" in result_text.lower():
                 failed_tool_calls += 1
@@ -504,9 +509,20 @@ def attach_agent_metrics(result_entry: Dict[str, Any], raw_task_data: Any) -> No
 
     result_entry["successful_tool_calls"] = successful_tool_calls
     result_entry["failed_tool_calls"] = failed_tool_calls
+    result_entry["tool_usage_by_name"] = dict(tool_usage_by_name)
 
 
 def summarize_tool_metrics(eval_results: Dict[str, Any]) -> Dict[str, Any]:
+    tool_usage_by_name: Counter[str] = Counter()
+    for result in eval_results.values():
+        if not isinstance(result, dict):
+            continue
+        for tool_name, count in (result.get("tool_usage_by_name") or {}).items():
+            try:
+                tool_usage_by_name[str(tool_name)] += int(count)
+            except (TypeError, ValueError):
+                continue
+
     return {
         "tasks_with_tool_calls": sum(
             1 for result in eval_results.values() if result.get("tool_call_count", 0) > 0
@@ -520,6 +536,7 @@ def summarize_tool_metrics(eval_results: Dict[str, Any]) -> Dict[str, Any]:
         "failed_tool_calls": sum(
             result.get("failed_tool_calls", 0) for result in eval_results.values()
         ),
+        "tool_usage_by_name": dict(tool_usage_by_name),
     }
 
 

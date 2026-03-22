@@ -836,7 +836,13 @@ class BenchmarkIntegrationTests(unittest.TestCase):
                     "answer": "A",
                     "metrics": {
                         "tool_call_count": 1,
-                        "conversation_history": [],
+                        "conversation_history": [
+                            {
+                                "role": "tool",
+                                "tool_name": "crop_image",
+                                "result": '{"ok": true}',
+                            }
+                        ],
                         "sandbox_error_types": ["ValueError"],
                     },
                 }
@@ -845,6 +851,7 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         )
 
         self.assertEqual(eval_results["1"]["sandbox_error_types"], ["ValueError"])
+        self.assertEqual(eval_results["1"]["tool_usage_by_name"], {"crop_image": 1})
 
     def test_local_vqa_completion_defaults_max_tokens(self) -> None:
         captured = {}
