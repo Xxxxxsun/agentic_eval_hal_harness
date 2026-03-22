@@ -219,7 +219,7 @@ class VQAImageSession:
         source_image_id: str,
     ) -> Dict[str, Any]:
         output_path = self._image_dir / f"{source_type}_{self._counter}.png"
-        image.save(output_path)
+        image.save(output_path, format="PNG")
         return self._register_image(
             str(output_path),
             source_type=source_type,

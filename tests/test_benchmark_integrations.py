@@ -94,6 +94,7 @@ from hal.benchmarks._benchmark_utils import (
     extract_inline_choices_from_text,
 )
 from hal.benchmarks.vstar_bench import VStarBenchBenchmark, parse_vstar_row
+from agents.common.vqa_mcp_tools import VQAImageSession
 from agents import model_client
 from agents.common.vqa_runtime import run_vqa_agent
 from agents.common import vqa_runtime
@@ -1438,6 +1439,36 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertFalse(content_part["image_url"]["url"].startswith("data:"))
         decoded = base64.b64decode(content_part["image_url"]["url"])
         self.assertGreater(len(decoded), 0)
+
+    def test_detect_actual_mime_type_ignores_misleading_extension(self) -> None:
+        if vqa_runtime.Image is None:
+            self.skipTest("Pillow is not available")
+
+        jpeg_with_png_name = Path(self.temp_dir.name) / "misleading.png"
+        image = vqa_runtime.Image.new("RGB", (32, 32), color="yellow")
+        image.save(jpeg_with_png_name, format="JPEG")
+
+        content_part = vqa_runtime._image_ref_to_content_part(
+            str(jpeg_with_png_name),
+            "vstar_bench",
+            model_mode="proxy",
+            model_name="test-model",
+        )
+
+        self.assertTrue(content_part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
+    def test_generated_visual_tool_images_are_saved_as_png(self) -> None:
+        if vqa_runtime.Image is None:
+            self.skipTest("Pillow is not available")
+
+        session = VQAImageSession("mime_test")
+        try:
+            session.register_initial_images([self.valid_image_path])
+            payload = session.crop_image("0", 0, 0, 10, 10)
+            with vqa_runtime.Image.open(payload["path"]) as image:
+                self.assertEqual(image.format, "PNG")
+        finally:
+            session.destroy()
 
     def test_vqa_prompt_allows_reasoning_and_requires_final_answer_line(self) -> None:
         prompt = vqa_runtime._build_task_prompt(

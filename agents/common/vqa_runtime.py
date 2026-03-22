@@ -316,6 +316,27 @@ def _guess_mime_type(path: str) -> str:
     return mime_type or "image/png"
 
 
+def _detect_actual_mime_type(image_path: Path) -> str:
+    if Image is None:
+        return _guess_mime_type(str(image_path))
+
+    try:
+        with Image.open(image_path) as image:
+            detected_format = (image.format or "").upper()
+    except Exception:
+        return _guess_mime_type(str(image_path))
+
+    format_to_mime = {
+        "JPEG": "image/jpeg",
+        "JPG": "image/jpeg",
+        "PNG": "image/png",
+        "WEBP": "image/webp",
+        "GIF": "image/gif",
+        "BMP": "image/bmp",
+    }
+    return format_to_mime.get(detected_format, _guess_mime_type(str(image_path)))
+
+
 def _uses_claude_proxy_plain_base64(
     model_mode: Optional[str],
     model_name: Optional[str],
@@ -398,11 +419,11 @@ def _prepare_local_image_payload(
     model_mode: Optional[str] = None,
 ) -> Tuple[str, bytes]:
     if not _should_resize_local_image(benchmark_name):
-        mime_type = _guess_mime_type(str(image_path))
+        mime_type = _detect_actual_mime_type(image_path)
         return mime_type, image_path.read_bytes()
 
     if Image is None:
-        mime_type = _guess_mime_type(str(image_path))
+        mime_type = _detect_actual_mime_type(image_path)
         return mime_type, image_path.read_bytes()
 
     default_target_size = -1
@@ -468,7 +489,7 @@ def _prepare_local_image_payload(
 
             return mime_type, image_bytes
     except Exception:
-        mime_type = _guess_mime_type(str(image_path))
+        mime_type = _detect_actual_mime_type(image_path)
         return mime_type, image_path.read_bytes()
 
 
