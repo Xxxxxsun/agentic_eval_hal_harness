@@ -632,6 +632,7 @@ def _solve_single_channel(
     executor = _create_code_executor(code_executor, sandbox_url) if enable_tools else None
     image_session = VQAImageSession(task_id)
     final_answer = ""
+    exhausted_tool_iterations = False
 
     try:
         image_session.register_initial_images(image_refs)
@@ -744,6 +745,49 @@ def _solve_single_channel(
                             ],
                         }
                     )
+        else:
+            exhausted_tool_iterations = True
+
+        if enable_tools and not final_answer:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Stop using tools now and provide the final answer directly. "
+                        "Return only the final answer with no explanation."
+                    ),
+                }
+            )
+            raw_response = _invoke_completion(
+                messages=messages,
+                model_name=model_name,
+                tools=None,
+                api_base_url=api_base_url,
+                api_key=api_key,
+                **kwargs,
+            )
+            finish_reason, assistant_message, thinking_content = _normalize_model_response(
+                raw_response, mode, max_iterations
+            )
+            final_answer = assistant_message.content or ""
+            response_preview = (final_answer or "").replace("\n", " ")[:160]
+            _debug_log(
+                task_id,
+                (
+                    f"fallback request finished include_image={include_image} "
+                    f"response_len={len(final_answer)} response_preview={response_preview!r} "
+                    f"after_exhausted={exhausted_tool_iterations}"
+                ),
+                debug,
+            )
+            assistant_record = {
+                "iteration": max_iterations,
+                "role": "assistant",
+                "content": final_answer,
+            }
+            if thinking_content:
+                assistant_record["thinking_content"] = thinking_content
+            conversation_history.append(assistant_record)
         return final_answer, {
             "tool_call_count": tool_call_count,
             "conversation_history": conversation_history,
