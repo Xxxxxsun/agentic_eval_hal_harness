@@ -90,9 +90,11 @@ from hal.benchmarks.mathvista import MathVistaBenchmark, parse_mathvista_row
 from hal.benchmarks.mmstar import MMStarBenchmark, parse_mmstar_row
 from hal.benchmarks._benchmark_utils import (
     _LOCAL_ASSET_PATH_CACHE,
+    evaluate_choice_or_text_response,
     extract_inline_choices_from_text,
 )
 from hal.benchmarks.vstar_bench import VStarBenchBenchmark, parse_vstar_row
+from agents import model_client
 from agents.common.vqa_runtime import run_vqa_agent
 from agents.common import vqa_runtime
 
@@ -286,6 +288,16 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertTrue(eval_results["2"]["correct"])
         self.assertEqual(metrics["accuracy"], 1.0)
         self.assertEqual(metrics["domain_accuracy"]["knowledge"], 1.0)
+
+    def test_choice_evaluation_accepts_parenthesized_label_with_text(self) -> None:
+        correct, predicted = evaluate_choice_or_text_response(
+            "(A) Blue",
+            "A",
+            choices={"A": "Blue", "B": "Red"},
+        )
+
+        self.assertTrue(correct)
+        self.assertEqual(predicted, "A")
 
     def test_hrbench_base64_image_is_materialized(self) -> None:
         encoded_image = base64.b64encode(b"fake-jpeg-bytes" * 20).decode("ascii")
@@ -995,6 +1007,43 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertEqual(tool_turns[0]["error_type"], "ValueError")
         self.assertEqual(tool_turns[1]["tool_name"], "execute_python")
 
+    def test_proxy_completion_error_is_surface_as_answer(self) -> None:
+        responses = [
+            {
+                "message": "",
+                "completion": {
+                    "error": {
+                        "message": "Timeout while downloading url=https://example.com/image.jpg",
+                    }
+                },
+            }
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_proxy_error": {
+                        "question": "What color is the scarf?",
+                        "image_url": "https://example.com/image.jpg",
+                    }
+                },
+                model_name="claude-opus-4-6",
+                model_mode="proxy",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        self.assertIn(
+            "ERROR: Timeout while downloading",
+            result["task_proxy_error"]["answer"],
+        )
+        self.assertEqual(result["task_proxy_error"]["metrics"]["tool_call_count"], 0)
+
     def test_mmstar_with_tools_preserves_three_channel_contract(self) -> None:
         responses = [
             _FakeResponse(
@@ -1213,6 +1262,56 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             )
 
         self.assertTrue(content_part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
+    def test_vqa_prompt_allows_reasoning_and_requires_final_answer_line(self) -> None:
+        prompt = vqa_runtime._build_task_prompt(
+            "What is 1+1?",
+            {},
+            include_image=False,
+        )
+
+        self.assertIn("You may think step by step if helpful.", prompt)
+        self.assertIn("Final answer:", prompt)
+        self.assertNotIn("Do not include reasoning.", prompt)
+
+    def test_proxy_chat_completion_with_tools_prefers_openai_compatible_endpoint(self) -> None:
+        captured = {}
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured.update(kwargs)
+                return _FakeResponse("stop", _FakeMessage(content="A"))
+
+        class _FakeChat:
+            def __init__(self):
+                self.completions = _FakeCompletions()
+
+        class _FakeClient:
+            def __init__(self, *args, **kwargs):
+                self.chat = _FakeChat()
+
+        with patch("agents.model_client.OpenAI", _FakeClient):
+            response = model_client.chat_completion_with_tools(
+                messages=[{"role": "user", "content": "hi"}],
+                model="claude-opus-4-6",
+                tools=[{"type": "function", "function": {"name": "noop", "parameters": {"type": "object"}}}],
+                model_mode="proxy",
+                proxy_openai_base_url="https://llm-chat-api.alibaba-inc.com/openai",
+                proxy_openai_api_key="token",
+                quota_id="quota",
+                access_key="ak",
+                user_id="uid",
+                max_tokens=128,
+                timeout=321,
+            )
+
+        self.assertIsInstance(response, _FakeResponse)
+        self.assertEqual(captured["model"], "claude-opus-4-6")
+        self.assertEqual(captured["max_tokens"], 128)
+        self.assertEqual(captured["timeout"], 321.0)
+        self.assertEqual(captured["extra_body"]["quota_id"], "quota")
+        self.assertEqual(captured["extra_body"]["access_key"], "ak")
+        self.assertEqual(captured["extra_body"]["user_id"], "uid")
 
     def test_hrbench_local_mode_uses_default_target_size(self) -> None:
         if vqa_runtime.Image is None:

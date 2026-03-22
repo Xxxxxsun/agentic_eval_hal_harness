@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - exercised in unit tests
         import requests
 
         DEFAULT_PROXY_URL = "https://llm-chat-api.alibaba-inc.com/v1/api/chat"
+        DEFAULT_PROXY_OPENAI_BASE_URL = "https://llm-chat-api.alibaba-inc.com/openai"
         DEFAULT_PROXY_TOKEN = (
             "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
             ".eyJ1c2VyIjoibW9kZWxfdHJhaW5fdmxtIn0"
@@ -67,11 +68,11 @@ except ImportError:  # pragma: no cover - exercised in unit tests
             if mode == "proxy":
                 proxy_base_url = kwargs.get(
                     "proxy_openai_base_url",
-                    os.getenv("PROXY_OPENAI_BASE_URL", ""),
+                    os.getenv("PROXY_OPENAI_BASE_URL", DEFAULT_PROXY_OPENAI_BASE_URL),
                 )
                 proxy_api_key = kwargs.get(
                     "proxy_openai_api_key",
-                    os.getenv("PROXY_OPENAI_API_KEY", ""),
+                    os.getenv("PROXY_OPENAI_API_KEY", os.getenv("PROXY_TOKEN", DEFAULT_PROXY_TOKEN)),
                 )
                 if proxy_base_url and proxy_api_key:
                     return OpenAI(base_url=proxy_base_url, api_key=proxy_api_key), model_name
@@ -111,9 +112,63 @@ except ImportError:  # pragma: no cover - exercised in unit tests
             )
             return proxy_url, headers, payload
 
+        def _build_proxy_openai_extra_body(**kwargs):
+            quota_id = kwargs.get("quota_id", os.getenv("QUOTA_ID", DEFAULT_QUOTA_ID))
+            access_key = kwargs.get("access_key", os.getenv("ACCESS_KEY", DEFAULT_ACCESS_KEY))
+            user_id = kwargs.get("user_id", os.getenv("PROXY_USER_ID", DEFAULT_USER_ID))
+            app = kwargs.get("proxy_app", DEFAULT_APP)
+            return {
+                "app": app,
+                "quota_id": quota_id,
+                "user_id": user_id,
+                "access_key": access_key,
+            }
+
+        def _proxy_openai_chat_completion(messages, model, tools=None, raw_response=False, **kwargs):
+            proxy_base_url = kwargs.get(
+                "proxy_openai_base_url",
+                os.getenv("PROXY_OPENAI_BASE_URL", DEFAULT_PROXY_OPENAI_BASE_URL),
+            )
+            proxy_api_key = kwargs.get(
+                "proxy_openai_api_key",
+                os.getenv("PROXY_OPENAI_API_KEY", os.getenv("PROXY_TOKEN", DEFAULT_PROXY_TOKEN)),
+            )
+            timeout = float(kwargs.get("timeout", 400))
+
+            client = OpenAI(base_url=proxy_base_url, api_key=proxy_api_key)
+            extra_params = {
+                "extra_body": _build_proxy_openai_extra_body(**kwargs),
+                "timeout": timeout,
+            }
+            if tools:
+                extra_params["tools"] = tools
+            if "max_tokens" in kwargs:
+                extra_params["max_tokens"] = int(kwargs["max_tokens"])
+            if "reasoning_effort" in kwargs:
+                extra_params["reasoning_effort"] = kwargs["reasoning_effort"]
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=float(kwargs.get("temperature", 1.0)),
+                **extra_params,
+            )
+            if raw_response:
+                return response
+            return response.choices[0].message.content
+
         def chat_completion_with_tools(messages, model, tools=None, **kwargs):
             mode = _get_model_mode(**kwargs)
             if mode == "proxy":
+                try:
+                    return _proxy_openai_chat_completion(
+                        messages,
+                        model,
+                        tools=tools,
+                        raw_response=True,
+                        **kwargs,
+                    )
+                except Exception:
+                    pass
                 proxy_url, headers, payload = _build_proxy_request(
                     messages, model, tools=tools, **kwargs
                 )
@@ -153,7 +208,8 @@ SYSTEM_PROMPT = (
     "unit conversion, or numerical verification would help. "
     "You can also use visual tools to list images, inspect image metadata, crop, zoom, "
     "or resize images when local details, small text, charts, or spatial relationships matter. "
-    "Keep the final answer concise and follow the user prompt's answer format."
+    "You may reason step by step when helpful, but the final line of your response must begin with "
+    "'Final answer:' and follow the user prompt's answer format."
 )
 
 
@@ -426,7 +482,6 @@ def _image_ref_to_content_part(
 def _build_task_prompt(question: str, choices: Dict[str, str], include_image: bool) -> str:
     lines = [
         "Answer the following benchmark question as accurately as possible.",
-        "Return only the final answer with no explanation.",
     ]
     if include_image:
         lines.append("Use the provided image(s) when relevant.")
@@ -438,7 +493,13 @@ def _build_task_prompt(question: str, choices: Dict[str, str], include_image: bo
         for label, choice_text in choices.items():
             lines.append(f"({label}) {choice_text}")
 
-    lines.extend(["", "Respond with only the final short answer. Do not include reasoning."])
+    lines.extend(
+        [
+            "",
+            "You may think step by step if helpful.",
+            "End with a final line in the format: Final answer: <answer>",
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -473,6 +534,24 @@ def _summarize_task_media(task_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _extract_proxy_error_message(raw_response: Dict[str, Any]) -> str:
+    completion = raw_response.get("completion")
+    if isinstance(completion, dict):
+        error = completion.get("error")
+        if isinstance(error, dict):
+            message = _normalize_text(error.get("message"))
+            if message:
+                return message
+
+    error = raw_response.get("error")
+    if isinstance(error, dict):
+        message = _normalize_text(error.get("message"))
+        if message:
+            return message
+
+    return ""
+
+
 def _normalize_model_response(raw_response: Any, mode: str, iteration: int) -> Tuple[str, Any, Optional[str]]:
     if mode == "local" or hasattr(raw_response, "choices"):
         choice = raw_response.choices[0]
@@ -500,6 +579,15 @@ def _normalize_model_response(raw_response: Any, mode: str, iteration: int) -> T
         ]
         assistant_message = SimpleNamespace(content=None, tool_calls=tool_calls, role="assistant")
         return "tool_calls", assistant_message, None
+
+    error_message = _extract_proxy_error_message(raw_response)
+    if not message and error_message:
+        assistant_message = SimpleNamespace(
+            content=f"ERROR: {error_message}",
+            tool_calls=None,
+            role="assistant",
+        )
+        return "stop", assistant_message, None
 
     content = message if isinstance(message, str) else str(message)
     assistant_message = SimpleNamespace(content=content, tool_calls=None, role="assistant")

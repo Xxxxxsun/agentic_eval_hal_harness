@@ -25,6 +25,7 @@ from openai import OpenAI
 # Default proxy configuration
 # ---------------------------------------------------------------------------
 DEFAULT_PROXY_URL = "https://llm-chat-api.alibaba-inc.com/v1/api/chat"
+DEFAULT_PROXY_OPENAI_BASE_URL = "https://llm-chat-api.alibaba-inc.com/openai"
 DEFAULT_PROXY_TOKEN = (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
     ".eyJ1c2VyIjoibW9kZWxfdHJhaW5fdmxtIn0"
@@ -88,6 +89,63 @@ def _build_proxy_request(
     return proxy_url, headers, payload
 
 
+def _build_proxy_openai_extra_body(**kwargs) -> Dict[str, Any]:
+    quota_id = kwargs.get("quota_id", os.getenv("QUOTA_ID", DEFAULT_QUOTA_ID))
+    access_key = kwargs.get("access_key", os.getenv("ACCESS_KEY", DEFAULT_ACCESS_KEY))
+    user_id = kwargs.get("user_id", os.getenv("PROXY_USER_ID", DEFAULT_USER_ID))
+    app = kwargs.get("proxy_app", DEFAULT_APP)
+    return {
+        "app": app,
+        "quota_id": quota_id,
+        "user_id": user_id,
+        "access_key": access_key,
+    }
+
+
+def _proxy_openai_chat_completion(
+    messages: List[Dict],
+    model: str,
+    tools: Optional[List[Dict]] = None,
+    raw_response: bool = False,
+    **kwargs,
+) -> Any:
+    proxy_base_url = kwargs.get(
+        "proxy_openai_base_url",
+        os.getenv("PROXY_OPENAI_BASE_URL", DEFAULT_PROXY_OPENAI_BASE_URL),
+    )
+    proxy_api_key = kwargs.get(
+        "proxy_openai_api_key",
+        os.getenv("PROXY_OPENAI_API_KEY", os.getenv("PROXY_TOKEN", DEFAULT_PROXY_TOKEN)),
+    )
+    timeout = float(kwargs.get("timeout", 400))
+
+    client = OpenAI(base_url=proxy_base_url, api_key=proxy_api_key)
+
+    extra_params: Dict[str, Any] = {
+        "extra_body": _build_proxy_openai_extra_body(**kwargs),
+        "timeout": timeout,
+    }
+    if "reasoning_effort" in kwargs:
+        extra_params["reasoning_effort"] = kwargs["reasoning_effort"]
+    if tools:
+        extra_params["tools"] = tools
+    if "max_tokens" in kwargs:
+        extra_params["max_tokens"] = int(kwargs["max_tokens"])
+    if "n" in kwargs:
+        extra_params["n"] = int(kwargs["n"])
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=float(kwargs.get("temperature", 1.0)),
+        **extra_params,
+    )
+
+    if raw_response:
+        return response
+    return response.choices[0].message.content
+
+
 def _proxy_chat_completion(
     messages: List[Dict],
     model: str,
@@ -97,6 +155,11 @@ def _proxy_chat_completion(
     Call external model through the internal proxy gateway.
     Returns the model's text response, or None on failure.
     """
+    try:
+        return _proxy_openai_chat_completion(messages, model, **kwargs)
+    except Exception:
+        print(traceback.format_exc(), flush=True)
+
     proxy_url, headers, payload = _build_proxy_request(messages, model, **kwargs)
 
     try:
@@ -129,6 +192,17 @@ def _proxy_chat_completion_raw(
         The full response dict from the proxy gateway, or None on failure.
         Typically contains: {"data": {"message": ..., "tool_calls": [...], ...}}
     """
+    try:
+        return _proxy_openai_chat_completion(
+            messages,
+            model,
+            tools=tools,
+            raw_response=True,
+            **kwargs,
+        )
+    except Exception:
+        print(traceback.format_exc(), flush=True)
+
     proxy_url, headers, payload = _build_proxy_request(
         messages, model, tools=tools, **kwargs
     )
@@ -247,29 +321,16 @@ def create_openai_client(model_name: str = "", **kwargs) -> Tuple[OpenAI, str]:
     mode = _get_model_mode(**kwargs)
 
     if mode == "proxy":
-        # The proxy gateway (llm-chat-api) does not support OpenAI-compatible
-        # tool calling / function calling. For agents that need a raw OpenAI
-        # client (e.g. aime2025_agent, imo_answerbench_agent), we configure
-        # the OpenAI SDK to point at the proxy's OpenAI-compatible endpoint
-        # if available, otherwise fall back to local mode.
         proxy_base_url = kwargs.get(
             "proxy_openai_base_url",
-            os.getenv("PROXY_OPENAI_BASE_URL", ""),
+            os.getenv("PROXY_OPENAI_BASE_URL", DEFAULT_PROXY_OPENAI_BASE_URL),
         )
         proxy_api_key = kwargs.get(
             "proxy_openai_api_key",
-            os.getenv("PROXY_OPENAI_API_KEY", ""),
+            os.getenv("PROXY_OPENAI_API_KEY", os.getenv("PROXY_TOKEN", DEFAULT_PROXY_TOKEN)),
         )
         if proxy_base_url and proxy_api_key:
             return OpenAI(base_url=proxy_base_url, api_key=proxy_api_key), model_name
-
-        # No OpenAI-compatible proxy endpoint configured; fall back to local
-        print(
-            "[model_client] WARNING: proxy mode requested but no "
-            "PROXY_OPENAI_BASE_URL / PROXY_OPENAI_API_KEY configured. "
-            "Falling back to local mode for OpenAI client creation.",
-            flush=True,
-        )
 
     # Local mode (or proxy fallback)
     return _resolve_local_client(model_name, **kwargs)
