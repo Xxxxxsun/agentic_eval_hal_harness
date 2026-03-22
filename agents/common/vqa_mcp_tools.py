@@ -227,9 +227,17 @@ class VQAImageSession:
         )
 
     def _get_image_record(self, image_id: str) -> Dict[str, Any]:
-        if image_id not in self._images:
-            raise ValueError(f"Unknown image_id: {image_id}")
-        return self._images[image_id]
+        normalized_id = str(image_id)
+        if normalized_id in self._images:
+            return self._images[normalized_id]
+
+        # Be lenient with common model outputs like "0" instead of "image_0".
+        if normalized_id.isdigit():
+            candidate_id = f"image_{normalized_id}"
+            if candidate_id in self._images:
+                return self._images[candidate_id]
+
+        raise ValueError(f"Unknown image_id: {image_id}")
 
     def _ensure_image_ready(self, image_id: str) -> Dict[str, Any]:
         record = self._get_image_record(image_id)
