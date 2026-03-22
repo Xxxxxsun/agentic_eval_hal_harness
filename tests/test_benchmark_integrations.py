@@ -733,6 +733,64 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertIn("image_id=image_1", followup_user_message["content"][0]["text"])
         self.assertEqual(followup_user_message["content"][1]["type"], "image_url")
 
+    def test_vqa_agent_crop_tool_accepts_numeric_image_id_alias(self) -> None:
+        if self.valid_image_path is None:
+            self.skipTest("Pillow is not available")
+
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "crop_call_numeric",
+                            "crop_image",
+                            json.dumps(
+                                {
+                                    "image_id": "0",
+                                    "left": 10,
+                                    "top": 20,
+                                    "right": 110,
+                                    "bottom": 90,
+                                }
+                            ),
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="A")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_visual_alias": {
+                        "question": "Inspect the cropped image.",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                        "file_name": "images/valid.png",
+                        "files": {"images/valid.png": self.valid_image_path},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        tool_turns = [
+            turn
+            for turn in result["task_visual_alias"]["metrics"]["conversation_history"]
+            if turn.get("role") == "tool"
+        ]
+        self.assertEqual(tool_turns[0]["tool_name"], "crop_image")
+        self.assertIsNone(tool_turns[0]["error_type"])
+        self.assertEqual(tool_turns[0]["tool_payload"]["image_id"], "image_1")
+
     def test_vqa_agent_visual_tool_without_images_returns_error(self) -> None:
         responses = [
             _FakeResponse(
