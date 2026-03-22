@@ -185,6 +185,12 @@ def log_results(results: dict[str, Any]) -> None:
                 for _, latency in value.items():
                     total_time += latency["total_time"]
                 logger.info(f"  average_total_time: {total_time / len(value)}")
+            elif key == "tool_usage_by_name" and isinstance(value, dict) and value:
+                formatted = ", ".join(
+                    f"{tool_name}={count}"
+                    for tool_name, count in sorted(value.items(), key=lambda item: (-item[1], item[0]))
+                )
+                logger.info(f"  tool_usage_by_name: {formatted}")
 
 
 def log_run_summary(run_id: str, log_dir: str) -> None:
