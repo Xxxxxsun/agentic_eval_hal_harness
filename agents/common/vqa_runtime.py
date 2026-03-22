@@ -814,6 +814,7 @@ def _solve_single_channel(
             if not enable_tools or not tool_calls:
                 break
 
+            pending_generated_image_messages: List[Dict[str, Any]] = []
             for tool_call in tool_calls:
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
@@ -855,7 +856,7 @@ def _solve_single_channel(
                 generated_image_path = execution_result.get("generated_image_path")
                 generated_image_id = execution_result.get("generated_image_id")
                 if generated_image_path and generated_image_id:
-                    messages.append(
+                    pending_generated_image_messages.append(
                         {
                             "role": "user",
                             "content": [
@@ -876,6 +877,7 @@ def _solve_single_channel(
                             ],
                         }
                     )
+            messages.extend(pending_generated_image_messages)
         else:
             exhausted_tool_iterations = True
 
