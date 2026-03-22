@@ -213,6 +213,18 @@ SYSTEM_PROMPT = (
 )
 
 
+def _build_system_prompt(
+    model_mode: Optional[str],
+    model_name: Optional[str],
+) -> str:
+    if _is_claude_proxy_model(model_mode, model_name):
+        return (
+            f"{SYSTEM_PROMPT} "
+            "Use tools sparingly and only when they are clearly necessary."
+        )
+    return SYSTEM_PROMPT
+
+
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").split()).strip()
 
@@ -793,7 +805,7 @@ def _solve_single_channel(
 
     for whole_attempt in range(whole_attempt_limit + 1):
         messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _build_system_prompt(mode, model_name)},
             {"role": "user", "content": user_content},
         ]
         conversation_history: List[Dict[str, Any]] = []
