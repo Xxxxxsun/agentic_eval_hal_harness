@@ -1540,6 +1540,14 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertIn("Final answer:", prompt)
         self.assertNotIn("Do not include reasoning.", prompt)
 
+    def test_system_prompt_adds_sparing_tool_hint_for_claude_proxy(self) -> None:
+        prompt = vqa_runtime._build_system_prompt("proxy", "claude-opus-4-6")
+        self.assertIn("Use tools sparingly and only when they are clearly necessary.", prompt)
+
+    def test_system_prompt_keeps_default_for_non_claude(self) -> None:
+        prompt = vqa_runtime._build_system_prompt("proxy", "doubao-seed-2.0-pro")
+        self.assertEqual(prompt, vqa_runtime.SYSTEM_PROMPT)
+
     def test_proxy_chat_completion_with_tools_prefers_openai_compatible_endpoint(self) -> None:
         captured = {}
 
