@@ -3,6 +3,7 @@ import io
 import json
 import mimetypes
 import os
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -304,6 +305,18 @@ def _serialize_image_bytes(
     return "image/jpeg", buffer.getvalue()
 
 
+def _remote_image_ref_to_content_part(image_ref: str) -> Dict[str, Any]:
+    with urllib.request.urlopen(image_ref, timeout=30) as response:
+        image_bytes = response.read()
+        mime_type = response.headers.get_content_type()
+
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime_type or _guess_mime_type(image_ref)};base64,{encoded}"},
+    }
+
+
 def _prepare_local_image_payload(
     image_path: Path,
     benchmark_name: str,
@@ -390,6 +403,11 @@ def _image_ref_to_content_part(
     model_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     if image_ref.startswith(("http://", "https://")):
+        if model_mode == "proxy":
+            try:
+                return _remote_image_ref_to_content_part(image_ref)
+            except Exception:
+                pass
         return {"type": "image_url", "image_url": {"url": image_ref}}
 
     image_path = Path(image_ref)

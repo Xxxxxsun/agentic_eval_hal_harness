@@ -1023,6 +1023,37 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         restored = vqa_runtime.Image.open(io.BytesIO(decoded))
         self.assertEqual(restored.size, (1600, 900))
 
+    def test_proxy_remote_image_payload_is_inlined(self) -> None:
+        class _FakeHeaders:
+            @staticmethod
+            def get_content_type() -> str:
+                return "image/jpeg"
+
+        class _FakeResponse:
+            headers = _FakeHeaders()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            @staticmethod
+            def read() -> bytes:
+                return b"fake-remote-image"
+
+        with patch(
+            "agents.common.vqa_runtime.urllib.request.urlopen",
+            return_value=_FakeResponse(),
+        ):
+            content_part = vqa_runtime._image_ref_to_content_part(
+                "https://example.com/test.jpg",
+                "vstar_bench",
+                model_mode="proxy",
+            )
+
+        self.assertTrue(content_part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
     def test_hrbench_local_mode_uses_default_target_size(self) -> None:
         if vqa_runtime.Image is None:
             self.skipTest("Pillow is not available")
