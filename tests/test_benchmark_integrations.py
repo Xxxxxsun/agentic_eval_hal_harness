@@ -1064,6 +1064,33 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertEqual(history[0]["content"], "Let me zoom in first.")
         self.assertEqual(history[1]["tool_name"], "crop_image")
 
+    def test_claude_proxy_without_tools_retries_empty_answer_once(self) -> None:
+        responses = [
+            _FakeResponse("stop", _FakeMessage(content="")),
+            _FakeResponse("stop", _FakeMessage(content="Final answer: B")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_claude_retry": {
+                        "question": "Which option is correct?",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                    }
+                },
+                model_name="claude-opus-4-6",
+                model_mode="proxy",
+                benchmark_name="vstar_bench",
+                enable_tools=False,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        self.assertEqual(result["task_claude_retry"], "Final answer: B")
+
     def test_vqa_agent_batches_tool_results_before_followup_image_messages(self) -> None:
         if self.valid_image_path is None:
             self.skipTest("Pillow is not available")
