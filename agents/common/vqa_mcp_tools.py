@@ -231,6 +231,11 @@ class VQAImageSession:
         if normalized_id in self._images:
             return self._images[normalized_id]
 
+        if normalized_id.lower() == "original":
+            candidate_id = "image_0"
+            if candidate_id in self._images:
+                return self._images[candidate_id]
+
         # Be lenient with common model outputs like "0" instead of "image_0".
         if normalized_id.isdigit():
             candidate_id = f"image_{normalized_id}"
