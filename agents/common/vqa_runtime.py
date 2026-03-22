@@ -737,13 +737,18 @@ def _solve_single_channel(
             finish_reason, assistant_message, thinking_content = _normalize_model_response(
                 raw_response, mode, iteration
             )
-            final_answer = assistant_message.content or ""
-            response_preview = (final_answer or "").replace("\n", " ")[:160]
+            current_content = assistant_message.content or ""
+            tool_calls = getattr(assistant_message, "tool_calls", None)
+            if enable_tools and tool_calls:
+                final_answer = ""
+            else:
+                final_answer = current_content
+            response_preview = current_content.replace("\n", " ")[:160]
             _debug_log(
                 task_id,
                 (
                     f"request finished include_image={include_image} "
-                    f"response_len={len(final_answer)} response_preview={response_preview!r}"
+                    f"response_len={len(current_content)} response_preview={response_preview!r}"
                 ),
                 debug,
             )
@@ -751,12 +756,11 @@ def _solve_single_channel(
             assistant_record: Dict[str, Any] = {
                 "iteration": iteration,
                 "role": "assistant",
-                "content": final_answer,
+                "content": current_content,
             }
             if thinking_content:
                 assistant_record["thinking_content"] = thinking_content
 
-            tool_calls = getattr(assistant_message, "tool_calls", None)
             if tool_calls:
                 assistant_record["tool_calls"] = [
                     {
@@ -769,7 +773,7 @@ def _solve_single_channel(
             conversation_history.append(assistant_record)
             messages.append(_assistant_message_to_dict(assistant_message))
 
-            if not enable_tools or finish_reason == "stop" or not tool_calls:
+            if not enable_tools or not tool_calls:
                 break
 
             for tool_call in tool_calls:

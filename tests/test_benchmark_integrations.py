@@ -1007,6 +1007,62 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertEqual(tool_turns[0]["error_type"], "ValueError")
         self.assertEqual(tool_turns[1]["tool_name"], "execute_python")
 
+    def test_vqa_agent_executes_tools_even_when_finish_reason_is_stop(self) -> None:
+        if self.valid_image_path is None:
+            self.skipTest("Pillow is not available")
+
+        responses = [
+            _FakeResponse(
+                "stop",
+                _FakeMessage(
+                    content="Let me zoom in first.",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "crop_then_answer",
+                            "crop_image",
+                            json.dumps(
+                                {
+                                    "image_id": "0",
+                                    "left": 0,
+                                    "top": 0,
+                                    "right": 20,
+                                    "bottom": 20,
+                                }
+                            ),
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="Final answer: A")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_stop_with_tools": {
+                        "question": "Which option is correct?",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                        "file_name": "images/valid.png",
+                        "files": {"images/valid.png": self.valid_image_path},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+                max_iterations=8,
+            )
+
+        self.assertEqual(result["task_stop_with_tools"]["answer"], "Final answer: A")
+        self.assertEqual(result["task_stop_with_tools"]["metrics"]["tool_call_count"], 1)
+        history = result["task_stop_with_tools"]["metrics"]["conversation_history"]
+        self.assertEqual(history[0]["content"], "Let me zoom in first.")
+        self.assertEqual(history[1]["tool_name"], "crop_image")
+
     def test_proxy_completion_error_is_surface_as_answer(self) -> None:
         responses = [
             {
