@@ -828,6 +828,64 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertIsNone(tool_turns[0]["error_type"])
         self.assertEqual(tool_turns[0]["tool_payload"]["image_id"], "image_1")
 
+    def test_vqa_agent_crop_tool_accepts_original_image_id_alias(self) -> None:
+        if self.valid_image_path is None:
+            self.skipTest("Pillow is not available")
+
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "crop_call_original",
+                            "crop_image",
+                            json.dumps(
+                                {
+                                    "image_id": "original",
+                                    "left": 10,
+                                    "top": 20,
+                                    "right": 110,
+                                    "bottom": 90,
+                                }
+                            ),
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="A")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_visual_original_alias": {
+                        "question": "Inspect the cropped image.",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                        "file_name": "images/valid.png",
+                        "files": {"images/valid.png": self.valid_image_path},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+            )
+
+        tool_turns = [
+            turn
+            for turn in result["task_visual_original_alias"]["metrics"]["conversation_history"]
+            if turn.get("role") == "tool"
+        ]
+        self.assertEqual(tool_turns[0]["tool_name"], "crop_image")
+        self.assertIsNone(tool_turns[0]["error_type"])
+        self.assertEqual(tool_turns[0]["tool_payload"]["image_id"], "image_1")
+
     def test_vqa_agent_visual_tool_without_images_returns_error(self) -> None:
         responses = [
             _FakeResponse(
@@ -871,6 +929,71 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             result["task_visual_3"]["metrics"]["sandbox_error_types"],
             ["ValueError"],
         )
+
+    def test_vqa_agent_tool_failure_does_not_prevent_later_tool_iterations(self) -> None:
+        responses = [
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "crop_missing",
+                            "crop_image",
+                            json.dumps(
+                                {
+                                    "image_id": "missing",
+                                    "left": 0,
+                                    "top": 0,
+                                    "right": 10,
+                                    "bottom": 10,
+                                }
+                            ),
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse(
+                "tool_calls",
+                _FakeMessage(
+                    content="",
+                    tool_calls=[
+                        _FakeToolCall(
+                            "python_after_failure",
+                            "execute_python",
+                            '{"code": "print(2 + 2)"}',
+                        )
+                    ],
+                ),
+            ),
+            _FakeResponse("stop", _FakeMessage(content="B")),
+        ]
+
+        with patch(
+            "agents.common.vqa_runtime._invoke_completion",
+            side_effect=responses,
+        ):
+            result = run_vqa_agent(
+                {
+                    "task_tool_fail_fallback": {
+                        "question": "Which option is correct?",
+                        "choices": {"A": "Alpha", "B": "Beta"},
+                    }
+                },
+                model_name="test-model",
+                benchmark_name="vstar_bench",
+                enable_tools=True,
+                code_executor="local",
+                max_tokens=64,
+                max_iterations=8,
+            )
+
+        self.assertEqual(result["task_tool_fail_fallback"]["answer"], "B")
+        history = result["task_tool_fail_fallback"]["metrics"]["conversation_history"]
+        self.assertEqual(history[-1]["content"], "B")
+        tool_turns = [turn for turn in history if turn.get("role") == "tool"]
+        self.assertEqual(tool_turns[0]["error_type"], "ValueError")
+        self.assertEqual(tool_turns[1]["tool_name"], "execute_python")
 
     def test_mmstar_with_tools_preserves_three_channel_contract(self) -> None:
         responses = [
