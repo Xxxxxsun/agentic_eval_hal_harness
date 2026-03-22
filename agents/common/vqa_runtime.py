@@ -775,214 +775,238 @@ def _solve_single_channel(
     if image_refs:
         _debug_log(task_id, f"image_refs={','.join(image_refs)}", debug)
 
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
     max_iterations = int(kwargs.get("max_iterations", 8))
-
-    conversation_history: List[Dict[str, Any]] = []
-    tool_call_count = 0
-    sandbox_error_types: List[str] = []
-    executor = _create_code_executor(code_executor, sandbox_url) if enable_tools else None
-    image_session = VQAImageSession(task_id)
-    final_answer = ""
-    exhausted_tool_iterations = False
     empty_answer_retry_limit = int(kwargs.get("empty_answer_retries", 1))
+    whole_attempt_limit = (
+        empty_answer_retry_limit if _is_claude_proxy_model(mode, model_name) else 0
+    )
 
-    try:
-        image_session.register_initial_images(image_refs)
-        tool_registry = VQAToolRegistry(executor, image_session) if enable_tools else None
-        for iteration in range(max_iterations):
-            attempt = 0
-            raw_response = None
-            finish_reason = "stop"
-            assistant_message = SimpleNamespace(content="", tool_calls=None, role="assistant")
-            thinking_content = None
-            while True:
+    last_result = (
+        "",
+        {
+            "tool_call_count": 0,
+            "conversation_history": [],
+            "sandbox_error_types": [],
+            "benchmark_name": benchmark_name,
+        },
+    )
+
+    for whole_attempt in range(whole_attempt_limit + 1):
+        messages: List[Dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        conversation_history: List[Dict[str, Any]] = []
+        tool_call_count = 0
+        sandbox_error_types: List[str] = []
+        executor = _create_code_executor(code_executor, sandbox_url) if enable_tools else None
+        image_session = VQAImageSession(task_id)
+        final_answer = ""
+        exhausted_tool_iterations = False
+
+        try:
+            image_session.register_initial_images(image_refs)
+            tool_registry = VQAToolRegistry(executor, image_session) if enable_tools else None
+            for iteration in range(max_iterations):
+                attempt = 0
+                raw_response = None
+                finish_reason = "stop"
+                assistant_message = SimpleNamespace(content="", tool_calls=None, role="assistant")
+                thinking_content = None
+                while True:
+                    raw_response = _invoke_completion(
+                        messages=messages,
+                        model_name=model_name,
+                        tools=tool_registry.get_tool_schemas() if enable_tools and tool_registry else None,
+                        api_base_url=api_base_url,
+                        api_key=api_key,
+                        **kwargs,
+                    )
+                    finish_reason, assistant_message, thinking_content = _normalize_model_response(
+                        raw_response, mode, iteration
+                    )
+                    if (
+                        enable_tools
+                        or attempt >= empty_answer_retry_limit
+                        or not _is_claude_proxy_model(mode, model_name)
+                        or _normalize_text(getattr(assistant_message, "content", ""))
+                    ):
+                        break
+                    attempt += 1
+                    _debug_log(
+                        task_id,
+                        (
+                            "empty answer from Claude proxy without tools; "
+                            f"retrying request attempt={attempt}/{empty_answer_retry_limit}"
+                        ),
+                        debug,
+                    )
+                current_content = assistant_message.content or ""
+                tool_calls = getattr(assistant_message, "tool_calls", None)
+                if enable_tools and tool_calls:
+                    final_answer = ""
+                else:
+                    final_answer = current_content
+                response_preview = current_content.replace("\n", " ")[:160]
+                _debug_log(
+                    task_id,
+                    (
+                        f"request finished include_image={include_image} "
+                        f"response_len={len(current_content)} response_preview={response_preview!r}"
+                    ),
+                    debug,
+                )
+
+                assistant_record: Dict[str, Any] = {
+                    "iteration": iteration,
+                    "role": "assistant",
+                    "content": current_content,
+                }
+                if thinking_content:
+                    assistant_record["thinking_content"] = thinking_content
+
+                if tool_calls:
+                    assistant_record["tool_calls"] = [
+                        {
+                            "id": tool_call.id,
+                            "function_name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                        }
+                        for tool_call in tool_calls
+                    ]
+                conversation_history.append(assistant_record)
+                messages.append(_assistant_message_to_dict(assistant_message))
+
+                if not enable_tools or not tool_calls:
+                    break
+
+                pending_generated_image_messages: List[Dict[str, Any]] = []
+                for tool_call in tool_calls:
+                    try:
+                        arguments = json.loads(tool_call.function.arguments or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+
+                    execution_result = tool_registry.execute_tool(
+                        tool_call.function.name,
+                        arguments,
+                    )
+                    tool_call_count += 1
+                    error_type = execution_result.get("error_type")
+                    if error_type:
+                        sandbox_error_types.append(error_type)
+
+                    tool_output = str(execution_result.get("output", "(No output)"))
+                    tool_record: Dict[str, Any] = {
+                        "iteration": iteration,
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "tool_name": tool_call.function.name,
+                        "arguments": arguments,
+                        "result": tool_output,
+                        "error_type": error_type,
+                    }
+                    tool_payload = execution_result.get("tool_payload")
+                    if isinstance(tool_payload, dict):
+                        tool_record["tool_payload"] = tool_payload
+                    conversation_history.append(
+                        tool_record
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": tool_output,
+                        }
+                    )
+                    generated_image_path = execution_result.get("generated_image_path")
+                    generated_image_id = execution_result.get("generated_image_id")
+                    if generated_image_path and generated_image_id:
+                        pending_generated_image_messages.append(
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": (
+                                            "A derived image was created by a visual tool. "
+                                            f"It is available as image_id={generated_image_id}. "
+                                            "You may inspect it in subsequent reasoning."
+                                        ),
+                                    },
+                                    _image_ref_to_content_part(
+                                        str(generated_image_path),
+                                        benchmark_name,
+                                        model_mode=mode,
+                                        model_name=model_name,
+                                    ),
+                                ],
+                            }
+                        )
+                messages.extend(pending_generated_image_messages)
+            else:
+                exhausted_tool_iterations = True
+
+            if enable_tools and not final_answer:
                 raw_response = _invoke_completion(
                     messages=messages,
                     model_name=model_name,
-                    tools=tool_registry.get_tool_schemas() if enable_tools and tool_registry else None,
+                    tools=None,
                     api_base_url=api_base_url,
                     api_key=api_key,
                     **kwargs,
                 )
                 finish_reason, assistant_message, thinking_content = _normalize_model_response(
-                    raw_response, mode, iteration
+                    raw_response, mode, max_iterations
                 )
-                if (
-                    enable_tools
-                    or attempt >= empty_answer_retry_limit
-                    or not _is_claude_proxy_model(mode, model_name)
-                    or _normalize_text(getattr(assistant_message, "content", ""))
-                ):
-                    break
-                attempt += 1
+                final_answer = assistant_message.content or ""
+                response_preview = (final_answer or "").replace("\n", " ")[:160]
                 _debug_log(
                     task_id,
                     (
-                        "empty answer from Claude proxy without tools; "
-                        f"retrying request attempt={attempt}/{empty_answer_retry_limit}"
+                        f"fallback request finished include_image={include_image} "
+                        f"response_len={len(final_answer)} response_preview={response_preview!r} "
+                        f"after_exhausted={exhausted_tool_iterations}"
                     ),
                     debug,
                 )
-            current_content = assistant_message.content or ""
-            tool_calls = getattr(assistant_message, "tool_calls", None)
-            if enable_tools and tool_calls:
-                final_answer = ""
-            else:
-                final_answer = current_content
-            response_preview = current_content.replace("\n", " ")[:160]
-            _debug_log(
-                task_id,
-                (
-                    f"request finished include_image={include_image} "
-                    f"response_len={len(current_content)} response_preview={response_preview!r}"
-                ),
-                debug,
-            )
-
-            assistant_record: Dict[str, Any] = {
-                "iteration": iteration,
-                "role": "assistant",
-                "content": current_content,
-            }
-            if thinking_content:
-                assistant_record["thinking_content"] = thinking_content
-
-            if tool_calls:
-                assistant_record["tool_calls"] = [
-                    {
-                        "id": tool_call.id,
-                        "function_name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments,
-                    }
-                    for tool_call in tool_calls
-                ]
-            conversation_history.append(assistant_record)
-            messages.append(_assistant_message_to_dict(assistant_message))
-
-            if not enable_tools or not tool_calls:
-                break
-
-            pending_generated_image_messages: List[Dict[str, Any]] = []
-            for tool_call in tool_calls:
-                try:
-                    arguments = json.loads(tool_call.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    arguments = {}
-
-                execution_result = tool_registry.execute_tool(
-                    tool_call.function.name,
-                    arguments,
-                )
-                tool_call_count += 1
-                error_type = execution_result.get("error_type")
-                if error_type:
-                    sandbox_error_types.append(error_type)
-
-                tool_output = str(execution_result.get("output", "(No output)"))
-                tool_record: Dict[str, Any] = {
-                    "iteration": iteration,
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "tool_name": tool_call.function.name,
-                    "arguments": arguments,
-                    "result": tool_output,
-                    "error_type": error_type,
+                assistant_record = {
+                    "iteration": max_iterations,
+                    "role": "assistant",
+                    "content": final_answer,
                 }
-                tool_payload = execution_result.get("tool_payload")
-                if isinstance(tool_payload, dict):
-                    tool_record["tool_payload"] = tool_payload
-                conversation_history.append(
-                    tool_record
-                )
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": tool_output,
-                    }
-                )
-                generated_image_path = execution_result.get("generated_image_path")
-                generated_image_id = execution_result.get("generated_image_id")
-                if generated_image_path and generated_image_id:
-                    pending_generated_image_messages.append(
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": (
-                                        "A derived image was created by a visual tool. "
-                                        f"It is available as image_id={generated_image_id}. "
-                                        "You may inspect it in subsequent reasoning."
-                                    ),
-                                },
-                                _image_ref_to_content_part(
-                                    str(generated_image_path),
-                                    benchmark_name,
-                                    model_mode=mode,
-                                    model_name=model_name,
-                                ),
-                            ],
-                        }
-                    )
-            messages.extend(pending_generated_image_messages)
-        else:
-            exhausted_tool_iterations = True
+                if thinking_content:
+                    assistant_record["thinking_content"] = thinking_content
+                conversation_history.append(assistant_record)
 
-        if enable_tools and not final_answer:
-            messages.append(
+            result = (
+                final_answer,
                 {
-                    "role": "user",
-                    "content": (
-                        "Stop using tools now and provide the final answer directly. "
-                        "Return only the final answer with no explanation."
-                    ),
-                }
+                    "tool_call_count": tool_call_count,
+                    "conversation_history": conversation_history,
+                    "sandbox_error_types": sandbox_error_types,
+                    "benchmark_name": benchmark_name,
+                },
             )
-            raw_response = _invoke_completion(
-                messages=messages,
-                model_name=model_name,
-                tools=None,
-                api_base_url=api_base_url,
-                api_key=api_key,
-                **kwargs,
-            )
-            finish_reason, assistant_message, thinking_content = _normalize_model_response(
-                raw_response, mode, max_iterations
-            )
-            final_answer = assistant_message.content or ""
-            response_preview = (final_answer or "").replace("\n", " ")[:160]
+            last_result = result
+
+            if final_answer or whole_attempt >= whole_attempt_limit:
+                return result
+
             _debug_log(
                 task_id,
                 (
-                    f"fallback request finished include_image={include_image} "
-                    f"response_len={len(final_answer)} response_preview={response_preview!r} "
-                    f"after_exhausted={exhausted_tool_iterations}"
+                    f"empty final answer from Claude proxy; retrying whole task "
+                    f"attempt={whole_attempt + 1}/{whole_attempt_limit}"
                 ),
                 debug,
             )
-            assistant_record = {
-                "iteration": max_iterations,
-                "role": "assistant",
-                "content": final_answer,
-            }
-            if thinking_content:
-                assistant_record["thinking_content"] = thinking_content
-            conversation_history.append(assistant_record)
-        return final_answer, {
-            "tool_call_count": tool_call_count,
-            "conversation_history": conversation_history,
-            "sandbox_error_types": sandbox_error_types,
-            "benchmark_name": benchmark_name,
-        }
-    finally:
-        if executor is not None:
-            executor.destroy()
-        image_session.destroy()
+        finally:
+            if executor is not None:
+                executor.destroy()
+            image_session.destroy()
+
+    return last_result
 
 
 def _merge_channel_metrics(channel_metrics: Iterable[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
