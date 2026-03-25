@@ -308,6 +308,7 @@ def _candidate_local_asset_roots() -> Iterable[Path]:
         os.getenv("HF_DATASETS_CACHE"),
         os.getenv("HUGGINGFACE_HUB_CACHE"),
         os.getenv("HF_HOME"),
+        os.getenv("HAL_BENCHMARK_ASSET_CACHE"),
     ]
 
     roots = []
@@ -322,6 +323,7 @@ def _candidate_local_asset_roots() -> Iterable[Path]:
 
     default_hf_root = Path.home() / ".cache" / "huggingface"
     roots.extend([default_hf_root, default_hf_root / "datasets", default_hf_root / "hub"])
+    roots.append(Path(ASSET_CACHE_DIR))
     roots.append(Path.cwd())
 
     seen = set()

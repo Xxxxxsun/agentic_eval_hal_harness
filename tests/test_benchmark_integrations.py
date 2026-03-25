@@ -223,6 +223,22 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             "https://hf-mirror.com/datasets/craigwu/vstar_bench/resolve/main/direct_attributes/sa_4690.jpg",
         )
 
+    def test_resolve_local_asset_path_uses_shared_asset_cache_dir(self) -> None:
+        from hal.benchmarks import _benchmark_utils
+
+        cache_root = Path(self.temp_dir.name) / "asset_cache"
+        cached_image = cache_root / "direct_attributes" / "sa_4690.jpg"
+        cached_image.parent.mkdir(parents=True, exist_ok=True)
+        cached_image.write_bytes(b"fake-jpg")
+
+        _benchmark_utils._LOCAL_ASSET_PATH_CACHE.clear()
+        with patch.object(_benchmark_utils, "ASSET_CACHE_DIR", str(cache_root)):
+            resolved = _benchmark_utils._resolve_local_asset_path(
+                "direct_attributes/sa_4690.jpg"
+            )
+
+        self.assertEqual(resolved, str(cached_image.resolve()))
+
     def test_extract_inline_choices_from_question_text(self) -> None:
         choices = extract_inline_choices_from_text(
             "What is the material of the glove?\n"
