@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import shutil
 import socket
 import time
 import urllib.request
@@ -8,6 +9,10 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 
 from datasets import load_dataset
+try:  # pragma: no cover - optional dependency varies by environment
+    from huggingface_hub import hf_hub_download
+except ImportError:  # pragma: no cover
+    hf_hub_download = None
 
 from hal.benchmarks._benchmark_utils import ASSET_CACHE_DIR
 
@@ -69,6 +74,32 @@ def _download_with_retries(asset_url: str, output_path: Path) -> None:
     )
 
 
+def _download_via_hf_hub(asset_path: str, output_path: Path, hf_endpoint: str) -> bool:
+    if hf_hub_download is None:
+        return False
+
+    kwargs = {
+        "repo_id": "craigwu/vstar_bench",
+        "repo_type": "dataset",
+        "filename": asset_path,
+        "local_dir": str(output_path.parent),
+        "local_dir_use_symlinks": False,
+    }
+    if hf_endpoint:
+        kwargs["endpoint"] = hf_endpoint
+
+    try:
+        downloaded_path = Path(hf_hub_download(**kwargs))
+    except TypeError:
+        kwargs.pop("endpoint", None)
+        downloaded_path = Path(hf_hub_download(**kwargs))
+
+    if downloaded_path.resolve() != output_path.resolve():
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(downloaded_path, output_path)
+    return True
+
+
 def main() -> None:
     hf_endpoint = os.getenv("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
     asset_root = Path(os.getenv("HAL_BENCHMARK_ASSET_CACHE", ASSET_CACHE_DIR))
@@ -87,7 +118,9 @@ def main() -> None:
             f"{hf_endpoint}/datasets/craigwu/vstar_bench/resolve/main/{asset_path}"
         )
         try:
-            _download_with_retries(asset_url, output_path)
+            used_hf_hub = _download_via_hf_hub(asset_path, output_path, hf_endpoint)
+            if not used_hf_hub:
+                _download_with_retries(asset_url, output_path)
             downloaded += 1
             print(f"downloaded {asset_path} -> {output_path}", flush=True)
         except Exception as exc:  # pragma: no cover - operational behavior
