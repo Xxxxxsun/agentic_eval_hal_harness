@@ -43,9 +43,9 @@ Decide whether the model response should be accepted as correct for the given qu
 Judge only the final answer meaning. Ignore extra explanation unless it changes the final answer.
 
 Return strict JSON only:
-{"correct": true, "predicted_answer": "<short answer>"}
+{{"correct": true, "predicted_answer": "<short answer>"}}
 or
-{"correct": false, "predicted_answer": "<short answer>"}
+{{"correct": false, "predicted_answer": "<short answer>"}}
 
 Question:
 {question}
