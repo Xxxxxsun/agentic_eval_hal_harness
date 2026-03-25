@@ -438,6 +438,41 @@ class BenchmarkIntegrationTests(unittest.TestCase):
         self.assertEqual(parsed["task"]["file_name"], "images/mv_img_0.png")
         self.assertIn("images/mv_img_0.png", parsed["task"]["files"])
 
+    def test_mathvista_llm_judge_can_override_incorrect_heuristic(self) -> None:
+        rows = [
+            {
+                "pid": "mv_judge",
+                "question": "What shape is shown?",
+                "answer": "triangle",
+                "question_type": "free_form",
+                "answer_type": "text",
+                "image": self.image_path,
+            }
+        ]
+
+        with patch.object(MathVistaBenchmark, "_load_dataset_rows", return_value=rows):
+            benchmark = MathVistaBenchmark("agents", {})
+
+        benchmark.agent_args = {"mathvista_use_llm_judge": "true"}
+
+        with patch(
+            "hal.benchmarks.mathvista._create_mathvista_judge_client",
+            return_value=object(),
+        ), patch(
+            "hal.benchmarks.mathvista.judge_mathvista_answer_with_llm",
+            return_value=(True, "triangle"),
+        ) as mock_judge:
+            eval_results = benchmark.evaluate_output(
+                {"mv_judge": "Final answer: three-sided polygon"},
+                "run",
+            )
+
+        self.assertTrue(eval_results["mv_judge"]["correct"])
+        self.assertEqual(eval_results["mv_judge"]["predicted"], "triangle")
+        self.assertTrue(eval_results["mv_judge"]["llm_judge_used"])
+        self.assertEqual(eval_results["mv_judge"]["llm_judge_model"], "gpt-4o")
+        mock_judge.assert_called_once()
+
     def test_mmstar_metrics_and_missing_channels(self) -> None:
         parsed = parse_mmstar_row(
             {
