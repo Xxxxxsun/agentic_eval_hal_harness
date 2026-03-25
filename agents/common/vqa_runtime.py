@@ -217,10 +217,12 @@ def _build_system_prompt(
     model_mode: Optional[str],
     model_name: Optional[str],
 ) -> str:
-    if _is_claude_proxy_model(model_mode, model_name):
+    if model_mode == "proxy" and (model_name or "").strip().lower() == "claude-opus-4-6":
         return (
             f"{SYSTEM_PROMPT} "
-            "Use tools sparingly and only when they are clearly necessary."
+            "Use as few tool calls as possible. "
+            "Only call a tool when it is clearly necessary to answer correctly, "
+            "and prefer answering directly without tools when the image already makes the answer clear."
         )
     return SYSTEM_PROMPT
 
