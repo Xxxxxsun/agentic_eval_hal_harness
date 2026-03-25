@@ -367,6 +367,16 @@ def _is_claude_proxy_model(
     return model_mode == "proxy" and normalized_model.startswith("claude")
 
 
+def _rewrite_remote_image_ref_for_model(
+    image_ref: str,
+    model_mode: Optional[str],
+    model_name: Optional[str],
+) -> str:
+    if not _is_claude_proxy_model(model_mode, model_name):
+        return image_ref
+    return image_ref.replace("https://hf-mirror.com/", "https://huggingface.co/", 1)
+
+
 def _should_resize_local_image(benchmark_name: str) -> bool:
     return benchmark_name in {"hrbench4k", "hrbench8k"}
 
@@ -524,10 +534,15 @@ def _image_ref_to_content_part(
 ) -> Dict[str, Any]:
     use_plain_base64 = _uses_claude_proxy_plain_base64(model_mode, model_name)
     if image_ref.startswith(("http://", "https://")):
+        resolved_image_ref = _rewrite_remote_image_ref_for_model(
+            image_ref,
+            model_mode,
+            model_name,
+        )
         if model_mode == "proxy":
             try:
                 return _remote_image_ref_to_content_part(
-                    image_ref,
+                    resolved_image_ref,
                     use_plain_base64=use_plain_base64,
                 )
             except Exception as exc:
@@ -535,11 +550,11 @@ def _image_ref_to_content_part(
                     task_id or "?",
                     (
                         f"failed to inline remote image; falling back to URL "
-                        f"image_ref={image_ref} error={type(exc).__name__}: {exc}"
+                        f"image_ref={resolved_image_ref} error={type(exc).__name__}: {exc}"
                     ),
                     debug,
                 )
-        return {"type": "image_url", "image_url": {"url": image_ref}}
+        return {"type": "image_url", "image_url": {"url": resolved_image_ref}}
 
     image_path = Path(image_ref)
     mime_type, image_bytes = _prepare_local_image_payload(

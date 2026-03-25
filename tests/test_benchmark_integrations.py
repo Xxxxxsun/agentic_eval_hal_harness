@@ -1484,6 +1484,18 @@ class BenchmarkIntegrationTests(unittest.TestCase):
             base64.b64encode(b"fake-remote-image").decode("ascii"),
         )
 
+    def test_claude_proxy_rewrites_hf_mirror_url_to_huggingface(self) -> None:
+        rewritten = vqa_runtime._rewrite_remote_image_ref_for_model(
+            "https://hf-mirror.com/datasets/craigwu/vstar_bench/resolve/main/direct_attributes/sa_4690.jpg",
+            "proxy",
+            "claude-opus-4-6",
+        )
+
+        self.assertEqual(
+            rewritten,
+            "https://huggingface.co/datasets/craigwu/vstar_bench/resolve/main/direct_attributes/sa_4690.jpg",
+        )
+
     def test_proxy_local_image_payload_uses_plain_base64_for_claude(self) -> None:
         if self.valid_image_path is None:
             self.skipTest("Pillow is not available")
