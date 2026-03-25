@@ -42,6 +42,11 @@ MATHVISTA_JUDGE_PROMPT = """You are grading a MathVista answer.
 Decide whether the model response should be accepted as correct for the given question.
 Judge only the final answer meaning. Ignore extra explanation unless it changes the final answer.
 
+Important equivalence rules:
+- Treat unit conversions as equivalent when they represent the same quantity.
+- If the model response contains multiple equivalent numeric forms of the same final answer, accept it as correct.
+- When multiple candidate values appear, mark correct if any clearly stated final value is mathematically equivalent to the gold answer.
+
 Return strict JSON only:
 {{"correct": true, "predicted_answer": "<short answer>"}}
 or
