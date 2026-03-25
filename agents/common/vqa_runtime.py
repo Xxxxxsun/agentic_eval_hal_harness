@@ -518,6 +518,9 @@ def _image_ref_to_content_part(
     benchmark_name: str,
     model_mode: Optional[str] = None,
     model_name: Optional[str] = None,
+    *,
+    debug: bool = False,
+    task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     use_plain_base64 = _uses_claude_proxy_plain_base64(model_mode, model_name)
     if image_ref.startswith(("http://", "https://")):
@@ -527,8 +530,15 @@ def _image_ref_to_content_part(
                     image_ref,
                     use_plain_base64=use_plain_base64,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                _debug_log(
+                    task_id or "?",
+                    (
+                        f"failed to inline remote image; falling back to URL "
+                        f"image_ref={image_ref} error={type(exc).__name__}: {exc}"
+                    ),
+                    debug,
+                )
         return {"type": "image_url", "image_url": {"url": image_ref}}
 
     image_path = Path(image_ref)
@@ -579,6 +589,9 @@ def _build_user_content(
     benchmark_name: str,
     model_mode: Optional[str] = None,
     model_name: Optional[str] = None,
+    *,
+    debug: bool = False,
+    task_id: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], str, Dict[str, str], List[str]]:
     question = _extract_question(task_data)
     choices = _extract_choices(task_data)
@@ -593,6 +606,8 @@ def _build_user_content(
                 benchmark_name,
                 model_mode=model_mode,
                 model_name=model_name,
+                debug=debug,
+                task_id=task_id,
             )
         )
     return content, question, choices, image_refs
@@ -774,6 +789,8 @@ def _solve_single_channel(
         benchmark_name=benchmark_name,
         model_mode=mode,
         model_name=model_name,
+        debug=debug,
+        task_id=task_id,
     )
     _debug_log(
         task_id,
